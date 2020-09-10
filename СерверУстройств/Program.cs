@@ -10,6 +10,7 @@ using System.Threading;
 using System.Net;
 using System.Net.Http;
 using System.Web;
+using System.Xml;
 
 namespace СерврерУстройств
 {
@@ -142,7 +143,7 @@ namespace СерврерУстройств
             
             JsonSerializerSettings serializerSettings = new JsonSerializerSettings
             {
-                Formatting = Formatting.Indented,
+                Formatting = Newtonsoft.Json.Formatting.Indented,
                 DateFormatString = "dd.MM.yyyy HH:mm:ss"
             };
             string data = JsonConvert.SerializeObject(список_пользователей,serializerSettings);
@@ -224,7 +225,7 @@ namespace СерврерУстройств
 
             JsonSerializerSettings serializerSettings = new JsonSerializerSettings
             {
-                Formatting = Formatting.Indented,
+                Formatting = Newtonsoft.Json.Formatting.Indented,
                 DateFormatString = "dd.MM.yyyy HH:mm:ss"
             };
             string data = JsonConvert.SerializeObject(список_устройств, serializerSettings);
@@ -305,7 +306,7 @@ namespace СерврерУстройств
         {
             JsonSerializerSettings serializerSettings = new JsonSerializerSettings
             {
-                Formatting = Formatting.Indented,
+                Formatting = Newtonsoft.Json.Formatting.Indented,
             };
             string data = JsonConvert.SerializeObject(список_событий, serializerSettings);
 
@@ -387,7 +388,7 @@ namespace СерврерУстройств
         {
             JsonSerializerSettings serializerSettings = new JsonSerializerSettings
             {
-                Formatting = Formatting.Indented,
+                Formatting = Newtonsoft.Json.Formatting.Indented,
             };
             string data = JsonConvert.SerializeObject(сервер.настройки, serializerSettings);
 
@@ -457,7 +458,7 @@ namespace СерврерУстройств
         {
             JsonSerializerSettings serializerSettings = new JsonSerializerSettings
             {
-                Formatting = Formatting.Indented,
+                Formatting = Newtonsoft.Json.Formatting.Indented,
             };
             string data = JsonConvert.SerializeObject(список_скриптов, serializerSettings);
 
@@ -545,7 +546,7 @@ namespace СерврерУстройств
             public Сервер()
             {
                 флаг_работы = true;
-                настройки.адрес_сервера = "http://+:16018/";
+                настройки.адрес_сервера = "http://+:16017/";
                 настройки.адрес_сервера_предсказаний = "http://194.213.117.99:4813";
                 настройки.адрес_сервера_температуры = "http://api.openweathermap.org/data/2.5/";
                 настройки.город = "Yekaterinburg";
@@ -651,6 +652,44 @@ namespace СерврерУстройств
 
                 switch (RawUrl.IndexOf("?") != -1 ? RawUrl.Remove(RawUrl.IndexOf("?")) : RawUrl)
                 {
+                    case "/setStatus":
+                        {
+                            string серийный_номер = Из_строки_по_ключу(RawUrl, "_sn_");
+
+                            Устройство устройство = null;
+
+                            if (серийный_номер != "")
+                            {
+                                foreach (Устройство device in список_устройств)
+                                {
+                                    if (device.серийный_номер == серийный_номер)
+                                    {
+                                        устройство = device;
+                                        break;
+                                    }
+                                }
+                            }
+
+                            if (устройство == null)
+                            {
+                                Console.WriteLine("Ошибка обработки запроса - устройство не распознано.");
+                                список_событий.Add(new Событие("Ошибка обработки запроса - устройство не распознано.", 31));
+
+                                string responseString = "<HTML><BODY> Error 401!</BODY></HTML>";
+                                response.StatusCode = 401;
+                                Отправка_ответа_на_запрос(response, responseString, RawUrl);
+                                return;
+                            }
+
+                            Console.WriteLine($"Устройство {устройство.имя} вышло на связь.");
+                            список_событий.Add(new Событие(устройство.имя, $"Устройство {устройство.имя} вышло на связь.", 40));
+                            устройство.статус = "ok";
+
+                            Отправка_ответа_на_запрос(response, "Ok", RawUrl);
+
+                            return;
+                        }
+                    case "/getTabloData":
                     case "/getTabloData.php":
                         {
                             string логин = Из_строки_по_ключу(RawUrl, "_user_");
@@ -694,7 +733,7 @@ namespace СерврерУстройств
                                 return;
                             }
 
-                            if (устройство.пароль != пароль)
+                            if (пароль!=""&&устройство.пароль != пароль)
                             {
                                 Console.WriteLine("Ошибка обработки запроса - пароль не совпадает.");
                                 список_событий.Add(new Событие("Ошибка обработки запроса - пароль не совпадает.", 31));
@@ -771,7 +810,7 @@ namespace СерврерУстройств
                                     }
                             }
 
-
+                            Отправка_ответа_на_запрос(response, "Ok", RawUrl);
 
                             return;
                         }
@@ -832,7 +871,7 @@ namespace СерврерУстройств
                             лист_куки.Add(new string[2] { "seans_key", сеанс.код_сеанса.ToString() });
                             лист_куки.Add(new string[2] { "user_login", пользователь.логин });
                             лист_куки.Add(new string[2] { "user_class", пользователь.класс });
-                            лист_куки.Add(new string[2] { "server_ip", request.Url.ToString().Remove(request.Url.ToString().IndexOf("16018") + 5) });
+                            лист_куки.Add(new string[2] { "server_ip", request.Url.ToString().Remove(request.Url.ToString().IndexOf("16017") + 5) });
 
                             Cookie cookie = new Cookie("data", Набор_куки(лист_куки));
                             cookie.Expires = DateTime.Now + new TimeSpan(0, 0, 5);
@@ -903,7 +942,7 @@ namespace СерврерУстройств
 
                             JsonSerializerSettings serializerSettings = new JsonSerializerSettings
                             {
-                                Formatting = Formatting.Indented,
+                                Formatting = Newtonsoft.Json.Formatting.Indented,
                                 DateFormatString = "dd.MM.yyyy HH:mm:ss"
                             };
                             string data = JsonConvert.SerializeObject(данные, serializerSettings);
@@ -1080,7 +1119,7 @@ namespace СерврерУстройств
             {
                 JsonSerializerSettings serializerSettings = new JsonSerializerSettings
                 {
-                    Formatting = Formatting.Indented,
+                    Formatting = Newtonsoft.Json.Formatting.Indented,
                     DateFormatString = "dd.MM.yyyy HH:mm:ss"
                 };
                 return JsonConvert.SerializeObject(this, serializerSettings);
@@ -1225,6 +1264,122 @@ namespace СерврерУстройств
             string имя;
             public string код;
 
+            public bool Нужна_обработка(int номер_скрипта)
+            {
+                if (код.IndexOf("@@@") != -1 || код.IndexOf("###") != -1)
+                    return true;
+                else
+                    return false;
+            }
+
+            public string Обработка(Устройство устройство)
+            {
+                Данные_табло данные_табло = new Данные_табло(устройство);
+                if (!данные_табло.данные_корректны)
+                    return "Err";
+
+                return "Err";
+            }
+
+            class Данные_табло
+            {
+                public List<Маршрут> маршруты;
+                public bool данные_корректны;
+
+                public Данные_табло(Устройство устройство)
+                {
+                    маршруты = new List<Маршрут>();
+
+                    try
+                    {
+                        XmlDocument xDoc = new XmlDocument();
+                        string Text;
+                        string site = сервер.настройки.адрес_сервера_предсказаний + "/getTabloData.php?_user_=" + устройство.логин
+                            + "&_password_=" + устройство.пароль;
+
+                        HttpWebRequest req = (HttpWebRequest)HttpWebRequest.Create(site);
+                        HttpWebResponse resp = (HttpWebResponse)req.GetResponse();
+
+                        using (StreamReader stream = new StreamReader(resp.GetResponseStream(), Encoding.UTF8))
+                        {
+                            Text = stream.ReadToEnd();
+                        }
+
+                        xDoc.LoadXml(Text);
+                        resp.Close();
+
+                        XmlElement xRoot = xDoc.DocumentElement;
+                        foreach (XmlNode row in xRoot)
+                        {
+                            Маршрут маршрут = new Маршрут();
+
+                            XmlNode attr = row.Attributes.GetNamedItem("td_id");
+                            маршрут.td_id = attr.Value;
+
+                            attr = row.Attributes.GetNamedItem("tb_id");
+                            маршрут.tb_id = attr.Value;
+
+                            attr = row.Attributes.GetNamedItem("td_marshtitle");
+                            маршрут.td_marshtitle = attr.Value;
+
+                            attr = row.Attributes.GetNamedItem("td_dirtitle");
+                            маршрут.td_dirtitle = attr.Value;
+
+                            attr = row.Attributes.GetNamedItem("td_template");
+                            маршрут.td_template = attr.Value;
+
+                            attr = row.Attributes.GetNamedItem("tc_systime");
+                            маршрут.tc_systime = attr.Value;
+
+                            attr = row.Attributes.GetNamedItem("tc_arrivetime");
+                            маршрут.tc_arrivetime = attr.Value;
+
+                            attr = row.Attributes.GetNamedItem("u_inv");
+                            маршрут.u_inv = attr.Value;
+
+                            attr = row.Attributes.GetNamedItem("td_marshtitle_en");
+                            маршрут.td_marshtitle_en = attr.Value;
+
+                            attr = row.Attributes.GetNamedItem("td_dirtitle_en");
+                            маршрут.td_dirtitle_en = attr.Value;
+
+                            маршруты.Add(маршрут);
+                        }
+
+                        if (маршруты.Count > 1)
+                            for (int i = 1; i < маршруты.Count; i++)
+                                if (DateTime.Parse(маршруты[i].tc_arrivetime) < DateTime.Parse(маршруты[i - 1].tc_arrivetime))
+                                {
+                                    Маршрут маршрут = маршруты[i - 1];
+                                    маршруты[i - 1] = маршруты[i];
+                                    маршруты[i] = маршрут;
+                                    i = 0;
+                                }
+
+                        данные_корректны = true;
+                    }
+                    catch (Exception e)
+                    {
+                        Console.WriteLine($"Ошибка полуучения данных табло." +e.Message);
+                        список_событий.Add(new Событие($"Ошибка полуучения данных табло." + e.Message, 23));
+                        данные_корректны = false;
+                    }
+                }
+            }
+
+            public class Маршрут
+            {
+                public string td_id;
+                public string tb_id;
+                public string td_marshtitle;
+                public string td_dirtitle;
+                public string td_template;
+                public string tc_systime;
+                public string tc_arrivetime;
+                public string u_inv;
+                public string td_marshtitle_en;
+                public string td_dirtitle_en;
+            }
         }
     }
 }
