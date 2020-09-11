@@ -22,6 +22,7 @@ namespace СерврерУстройств
         static List<Устройство> список_устройств = new List<Устройство>();
         static List<СписокОшибокУстройства> список_ошибок = new List<СписокОшибокУстройства>();
         static List<Скрипт> список_скриптов = new List<Скрипт>();
+        static List<СообщениеЕДДС> список_сообщенийЕДДС = new List<СообщениеЕДДС>();
         static Сервер сервер;
 
         static void Main(string[] args)
@@ -536,12 +537,94 @@ namespace СерврерУстройств
             список_событий.Add(new Событие("Список событий загружен из файла.", 13));
         }
 
+        static void Запись_сообщений_на_диск()
+        {
+            JsonSerializerSettings serializerSettings = new JsonSerializerSettings
+            {
+                Formatting = Newtonsoft.Json.Formatting.Indented,
+            };
+            string data = JsonConvert.SerializeObject(список_сообщенийЕДДС, serializerSettings);
+
+            string path = $"{Environment.CurrentDirectory}\\Data";
+            DirectoryInfo dirInfo = new DirectoryInfo(path);
+            if (!dirInfo.Exists)
+            {
+                dirInfo.Create();
+            }
+
+            try
+            {
+                using (FileStream fstream = new FileStream($"{path}\\Messages.bsv", FileMode.OpenOrCreate))
+                {
+                    // преобразуем строку в байты
+                    byte[] array = System.Text.Encoding.Default.GetBytes(data);
+                    // запись массива байтов в файл
+                    fstream.Write(array, 0, array.Length);
+                }
+            }
+            catch (Exception e)
+            {
+                Console.WriteLine("Ошибка при записи данных о сообщениях\r\n" + e.Message);
+                список_событий.Add(new Событие("Ошибка при записи данных о сообщений\r\n" + e.Message, 10));
+                return;
+            }
+
+            Console.WriteLine("Список сообщений сохранен в файл.");
+            список_событий.Add(new Событие("Список сообщений сохранен в файл.", 11));
+        }
+
+        static void Чтение_сообщений_с_диска()
+        {
+            string data = "";
+            string path = $"{Environment.CurrentDirectory}\\Data";
+            DirectoryInfo dirInfo = new DirectoryInfo(path);
+            if (!dirInfo.Exists)
+            {
+                Console.WriteLine("Ошибка чтения файла Messages.bsv.\r\nПапка Data не найдена.");
+                список_событий.Add(new Событие("Ошибка чтения фала Messages.bsv.\r\nПапка Data не найдена.", 12));
+                return;
+            }
+
+            try
+            {
+                using (FileStream fstream = File.OpenRead($"{path}\\Messages.bsv"))
+                {
+                    // преобразуем строку в байты
+                    byte[] array = new byte[fstream.Length];
+                    // считываем данные
+                    fstream.Read(array, 0, array.Length);
+                    // декодируем байты в строку
+                    data = System.Text.Encoding.Default.GetString(array);
+                }
+
+
+                СообщениеЕДДС[] сообщения = JsonConvert.DeserializeObject<СообщениеЕДДС[]>(data);
+                список_скриптов.Clear();
+
+
+                if (сообщения.Length > 0)
+                {
+                    for (int i = 0; i < сообщения.Length; i++)
+                        список_сообщенийЕДДС.Add(сообщения[i]);
+                }
+            }
+            catch (Exception e)
+            {
+                Console.WriteLine("Ошибка при чтении данных о сообщениях\r\n" + e.Message);
+                список_событий.Add(new Событие("Ошибка при чтении данных о сообщениях\r\n" + e.Message, 12));
+                return;
+            }
+
+            Console.WriteLine("Список сообщений загружен из файла.");
+            список_событий.Add(new Событие("Список сообщений загружен из файла.", 13));
+        }
+
         public class Сервер
         {
             public bool флаг_работы;
             public HttpListener listener = new HttpListener();
             public Настройки настройки = new Настройки();
-            string температура;
+            public string температура;
 
             public Сервер()
             {
@@ -1199,7 +1282,8 @@ namespace СерврерУстройств
             public double широта { get; set; }
             public double долгота { get; set; }
             public string тип_сообщения { get; set; }
-            public string сообщение { get; set; }
+            public string сообщение_по_умолчанию { get; set; }
+            public string сообщение_индивидуальное { get; set; }
 
             public Устройство(string серийный_номер)
             {
@@ -1211,7 +1295,8 @@ namespace СерврерУстройств
                 адрес = "";
                 телефон = "";
                 тип_сообщения = "Не выводится";
-                сообщение = "";
+                сообщение_по_умолчанию = "";
+                сообщение_индивидуальное = "";
             }
         }
 
@@ -1278,7 +1363,134 @@ namespace СерврерУстройств
                 if (!данные_табло.данные_корректны)
                     return "Err";
 
-                return "Err";
+                string цвет_температуры = "#22dd00";
+                int n;
+                if (Int32.TryParse(сервер.температура, out n))
+                {
+                    if (Convert.ToInt32(сервер.температура) <= -30)
+                        цвет_температуры = "#0000ff";
+                    if (Convert.ToInt32(сервер.температура) > -30 && Convert.ToInt32(сервер.температура) <= -15)
+                        цвет_температуры = "#4444aa";
+                    if (Convert.ToInt32(сервер.температура) > -15 && Convert.ToInt32(сервер.температура) <= 0)
+                        цвет_температуры = "#ffffff";
+                    if (Convert.ToInt32(сервер.температура) > 0 && Convert.ToInt32(сервер.температура) <= 15)
+                        цвет_температуры = "#22dd00";
+                    if (Convert.ToInt32(сервер.температура) > 15 && Convert.ToInt32(сервер.температура) <= 30)
+                        цвет_температуры = "#aa5500";
+                    if (Convert.ToInt32(сервер.температура) > 30)
+                        цвет_температуры = "#ff0000";
+                }
+
+                List<Перестановка> Массив_перестановок = new List<Перестановка>()
+                {
+                    new Перестановка("\r\n","" ),
+                    new Перестановка("\t",""),
+                    new Перестановка("@@@temperatura",сервер.температура),
+                    new Перестановка("@@@temp_color",цвет_температуры),
+                };
+
+                string текст_бегущей_строки = устройство.тип_сообщения=="По умолчанию"?устройство.сообщение_по_умолчанию:устройство.тип_сообщения=="Индивидуальное"?устройство.сообщение_индивидуальное:"";
+                int количество_строк = 1;
+                int размер_строки_по_вертикали = 12;
+                string шрифт1 = "m";
+                string шрифт2 = "m";
+                string тип_скрипта = "0";
+
+                string текст_скрипта = код;
+
+                for (; ; )
+                {
+                    if (текст_скрипта.IndexOf("###текст_бегущей_строки{") != -1)
+                    {
+                        int t_f = текст_скрипта.IndexOf("###текст_бегущей_строки{");
+                        int t_s = текст_скрипта.Substring(t_f).IndexOf("}");
+                        string str = текст_скрипта.Substring(t_f);
+                        str = str.Remove(t_s);
+                        str = str.Substring(str.IndexOf("{") + 1);
+                        текст_бегущей_строки = str;
+                        текст_скрипта = текст_скрипта.Remove(t_f, t_s + 2);
+                        continue;
+                    }
+
+                    if (текст_скрипта.IndexOf("###количество_строк{") != -1)
+                    {
+                        int t_f = текст_скрипта.IndexOf("###количество_строк{");
+                        int t_s = текст_скрипта.Substring(t_f).IndexOf("}");
+                        string str = текст_скрипта.Substring(t_f);
+                        str = str.Remove(t_s);
+                        str = str.Substring(str.IndexOf("{") + 1);
+                        количество_строк = Convert.ToInt32(str);
+                        текст_скрипта = текст_скрипта.Remove(t_f, t_s + 2);
+                        continue;
+                    }
+
+                    if (текст_скрипта.IndexOf("###размер_строки_по_вертикали{") != -1)
+                    {
+                        int t_f = текст_скрипта.IndexOf("###размер_строки_по_вертикали{");
+                        int t_s = текст_скрипта.Substring(t_f).IndexOf("}");
+                        string str = текст_скрипта.Substring(t_f);
+                        str = str.Remove(t_s);
+                        str = str.Substring(str.IndexOf("{") + 1);
+                        размер_строки_по_вертикали = Convert.ToInt32(str);
+                        текст_скрипта = текст_скрипта.Remove(t_f, t_s + 2);
+                        continue;
+                    }
+
+                    if (текст_скрипта.IndexOf("###шрифт1{") != -1)
+                    {
+                        int t_f = текст_скрипта.IndexOf("###шрифт1{");
+                        int t_s = текст_скрипта.Substring(t_f).IndexOf("}");
+                        string str = текст_скрипта.Substring(t_f);
+                        str = str.Remove(t_s);
+                        str = str.Substring(str.IndexOf("{") + 1);
+                        шрифт1 = str;
+                        текст_скрипта = текст_скрипта.Remove(t_f, t_s + 2);
+                        continue;
+                    }
+
+                    if (текст_скрипта.IndexOf("###шрифт2{") != -1)
+                    {
+                        int t_f = текст_скрипта.IndexOf("###шрифт2{");
+                        int t_s = текст_скрипта.Substring(t_f).IndexOf("}");
+                        string str = текст_скрипта.Substring(t_f);
+                        str = str.Remove(t_s);
+                        str = str.Substring(str.IndexOf("{") + 1);
+                        шрифт2 = str;
+                        текст_скрипта = текст_скрипта.Remove(t_f, t_s + 2);
+                        continue;
+                    }
+
+                    if (текст_скрипта.IndexOf("###тип_скрипта{") != -1)
+                    {
+                        int t_f = текст_скрипта.IndexOf("###тип_скрипта{");
+                        int t_s = текст_скрипта.Substring(t_f).IndexOf("}");
+                        string str = текст_скрипта.Substring(t_f);
+                        str = str.Remove(t_s);
+                        str = str.Substring(str.IndexOf("{") + 1);
+                        тип_скрипта = str;
+                        текст_скрипта = текст_скрипта.Remove(t_f, t_s + 2);
+                        continue;
+                    }
+
+                    if (данные_табло.маршруты.Count == 0)
+                        тип_скрипта = "нет информации";
+
+                    break;
+                }
+
+                
+            }
+
+
+            class Перестановка
+            {
+                public string a { get; set; }
+                public string b { get; set; }
+                public Перестановка(string a, string b)
+                {
+                    this.a = a;
+                    this.b = b;
+                }
             }
 
             class Данные_табло
@@ -1379,6 +1591,28 @@ namespace СерврерУстройств
                 public string u_inv;
                 public string td_marshtitle_en;
                 public string td_dirtitle_en;
+            }
+        }
+
+        public class СообщениеЕДДС
+        {
+            public int ID { get; set; }
+            public DateTime время_начала { get; set; }
+            public DateTime время_конца { get; set; }
+            public string тип { get; set; }
+            public string текст { get; set; }
+            public int период { get; set; }
+            public List<string> табло { get; set; }
+
+            public СообщениеЕДДС(int id, DateTime начало, DateTime конец, string тип_сообщения)
+            {
+                ID = id;
+                время_начала = начало;
+                время_конца = конец;
+                тип = тип_сообщения;
+                текст = "";
+                период = 1;
+                табло = new List<string>();
             }
         }
     }
