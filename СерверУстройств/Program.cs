@@ -11,6 +11,7 @@ using System.Net;
 using System.Net.Http;
 using System.Web;
 using System.Xml;
+using System.Xml.Linq;
 
 namespace СерврерУстройств
 {
@@ -24,9 +25,18 @@ namespace СерврерУстройств
         static List<Скрипт> список_скриптов = new List<Скрипт>();
         static List<СообщениеЕДДС> список_сообщенийЕДДС = new List<СообщениеЕДДС>();
         static Сервер сервер;
+        static lastreq[] lr = new lastreq[2];
+
+        struct lastreq
+        {
+            public DateTime time { set; get; }
+            public string Url { set; get; }
+        }
 
         static void Main(string[] args)
         {
+            lr[0].time = DateTime.Now;
+            lr[0].Url = "";
             /*
             Пользователь пользователь = new Пользователь();
             пользователь.логин = "Sergey";
@@ -48,10 +58,21 @@ namespace СерврерУстройств
             список_пользователей.Add(пользователь);
             */
             //Запись_пользователей_на_диск();
+            /*Скрипт скрипт = new Скрипт();
+            скрипт.имя = "Стандарт 2х3";
+            скрипт.код = "###тип_скрипта{стандарт}\r\n" +
+                "###количество_строк{4}\r\n" +
+                "###размер_строки_по_вертикали{11}\r\n" +
+                "###шрифт1{s}\r\n" +
+                "###шрифт2{s}\r\n";
+            список_скриптов.Add(скрипт);
+            Запись_скриптов_на_диск();*/
+
             Чтение_устройств_с_диска();
             //Запись_устройств_на_диск();
             Чтение_событий_с_диска();
             Чтение_пользователей_с_диска();
+            Чтение_скриптов_с_диска();
 
             Thread поток_работы_со_списками = new Thread(Работа_со_списками);
             поток_работы_со_списками.IsBackground = true;
@@ -110,9 +131,15 @@ namespace СерврерУстройств
                     }
 
 
-                //Перевод устройств в офлайн
+                //Перевод устройств в офлайн и изменение типа выводимого сообщения
                 foreach (Устройство устройство in список_устройств)
                 {
+                    if (устройство.тип_сообщения == "Индивидуальное" && устройство.время_показа_индивидуального_сообщения > DateTime.Now)
+                        устройство.тип_сообщения = "По умолчанию";
+
+                    if (устройство.тип_сообщения == "По умолчанию" && (устройство.сообщение_по_умолчанию == "" || устройство.сообщение_по_умолчанию == null))
+                        устройство.тип_сообщения = "Не выводится";
+
                     if (устройство.статус == "off") continue;
                     DateTime последний_выход_на_связь = new DateTime(2000, 1, 1, 0, 0, 0);
                     for (int i = список_событий.Count - 1; i >= 0; i--)
@@ -722,6 +749,29 @@ namespace СерврерУстройств
                 }
             }
 
+            public UInt16 CRC(byte[] buf, int len)
+            {
+                UInt16 crc = 0xFFFF;
+
+                for (int pos = 0; pos < len; pos++)
+                {
+                    crc ^= (UInt16)buf[pos];
+
+                    for (int i = 8; i != 0; i--)
+                    {
+                        if ((crc & 0x0001) != 0)
+                        {
+                            crc >>= 1;
+                            crc ^= 0xA001;
+                        }
+                        else
+                            crc >>= 1;
+                    }
+                }
+
+                return crc;
+            }
+
             void ОбработкаЗапроса(object Context)
             {
                 HttpListenerContext context = (HttpListenerContext)Context;
@@ -729,6 +779,9 @@ namespace СерврерУстройств
                 HttpListenerResponse response = context.Response;
 
                 string RawUrl = request.RawUrl.Replace("+", " ").Replace("%2C", ",");
+                lr[1] = lr[0];
+                lr[0].time = DateTime.Now;
+                lr[0].Url = RawUrl;
 
                 Console.WriteLine("Получен запрос "+RawUrl);
                 список_событий.Add(new Событие("Получен запрос " + RawUrl, 30));
@@ -913,8 +966,38 @@ namespace СерврерУстройств
 
                             string текст_скрипта = скрипт.Нужна_обработка() ? скрипт.Обработка(устройство) : скрипт.код;
 
-                            Отправка_ответа_на_запрос(response, текст_скрипта, RawUrl);
+                            byte[] ДлинаСкрипта = { 0x00, 0x00, 0x00, 0x00 };
+                            ДлинаСкрипта = BitConverter.GetBytes(Encoding.Default.GetBytes(текст_скрипта).Length + 1);
 
+                            response.ContentLength64 = Encoding.Default.GetBytes(текст_скрипта).Length + 13;
+                            byte[] buffer = Encoding.Default.GetBytes($"%%%{устройство.код_обновления_скрипта}");
+
+                            try
+                            {
+                                Stream output = response.OutputStream;
+                                output.Write(buffer, 0, buffer.Length);
+
+                                byte[] bufCRC = new byte[] { 0x01, 0x20 };
+                                bufCRC = bufCRC.Concat(ДлинаСкрипта).ToArray();
+                                bufCRC = bufCRC.Concat(new byte[] { 0x12 }).ToArray();
+                                bufCRC = bufCRC.Concat(Encoding.Default.GetBytes(текст_скрипта)).ToArray();
+                                output.Write(bufCRC, 0, bufCRC.Length);
+
+                                UInt16 CRC16 = CRC(bufCRC, bufCRC.Length);
+                                buffer = new byte[] { (byte)(CRC16), (byte)(CRC16 >> 8) };
+                                output.Write(buffer, 0, buffer.Length);
+                                output.Close();
+
+                                Console.WriteLine($"Отправлен ответ на запрос устройству \"{устройство.имя}\".");
+                                список_событий.Add(new Событие(устройство.имя, $"Отправлен ответ на запрос устройству \"{устройство.имя}\".", 32));
+                            }
+                            catch (Exception e)
+                            {
+                                Console.WriteLine($"Ошибка обработки запроса от устройства \"{устройство.имя}\"."+e.Message);
+                                список_событий.Add(new Событие(устройство.имя, $"Ошибка обработки запроса от устройства \"{устройство.имя}\"." + e.Message, 33));
+                            }
+
+                            устройство.код_обновления_скрипта = 0;
                             return;
                         }
                     default:
@@ -939,9 +1022,9 @@ namespace СерврерУстройств
                             }
                             if (пользователь.логин == "" || пользователь.пароль != пароль_из_запроса)
                             {
-                                Cookie cookie2 = new Cookie("err", $"1+{логин_из_запроса}");
-                                cookie2.Expires = DateTime.Now + new TimeSpan(0, 0, 5);
-                                response.SetCookie(cookie2);
+                                Cookie cookie = new Cookie("err", $"1+{логин_из_запроса}");
+                                cookie.Expires = DateTime.Now + new TimeSpan(48, 0, 0);
+                                response.SetCookie(cookie);
 
                                 Отправка_ответа_на_запрос(response, Загрузка_страницы("Авторизация.html"), RawUrl);
                                 return;
@@ -956,12 +1039,14 @@ namespace СерврерУстройств
                                     break;
                                 }
                             }
+                            bool lr_совпадает = false;
+                            if (lr[0].Url == lr[1].Url && (lr[0].time - lr[1].time) < new TimeSpan(0, 0, 2)) lr_совпадает = true;
 
-                            if (есть_сеанс)
+                            if (есть_сеанс&&!lr_совпадает)
                             {
-                                Cookie cookie2 = new Cookie("err", $"2+{логин_из_запроса}");
-                                cookie2.Expires = DateTime.Now + new TimeSpan(0, 0, 5);
-                                response.SetCookie(cookie2);
+                                Cookie cookie = new Cookie("err", $"2+{логин_из_запроса}");
+                                cookie.Expires = DateTime.Now + new TimeSpan(0, 0, 5);
+                                response.SetCookie(cookie);
 
                                 Отправка_ответа_на_запрос(response, Загрузка_страницы("Авторизация.html"), RawUrl);
                                 return;
@@ -970,40 +1055,82 @@ namespace СерврерУстройств
                             Сеанс сеанс = new Сеанс(пользователь);
                             список_сеансов.Add(сеанс);
 
-                            List<string[]> лист_куки = new List<string[]>();
-                            лист_куки.Add(new string[2] { "seans_key", сеанс.код_сеанса.ToString() });
-                            лист_куки.Add(new string[2] { "user_login", пользователь.логин });
-                            лист_куки.Add(new string[2] { "user_class", пользователь.класс });
-                            лист_куки.Add(new string[2] { "server_ip", request.Url.ToString().Remove(request.Url.ToString().IndexOf("16017") + 5) });
+                            string адрес_переадресации = "";
 
-                            Cookie cookie = new Cookie("data", Набор_куки(лист_куки));
-                            cookie.Expires = DateTime.Now + new TimeSpan(0, 0, 5);
-                            response.SetCookie(cookie);
-                            Отправка_ответа_на_запрос(response, Загрузка_страницы("Главная.html"), RawUrl);
+                            switch (пользователь.класс)
+                            {
+                                case "Admin":
+                                    адрес_переадресации = "/main_devices_admin";
+                                    break;
+                                case "COD":
+                                    break;
+                                case "EDDS":
+                                    break;
+                            }
+
+                            XDocument xDoc = new XDocument();
+                            XElement html = new XElement("html");
+                            XElement head = new XElement("head",
+                                            new XElement("meta", new XAttribute("charset", "utf-8")),
+                                            new XElement("meta", new XAttribute("http-equiv", "refresh"), new XAttribute("content", $"1;URL={request.Url.ToString().Remove(request.Url.ToString().IndexOf("/")) + адрес_переадресации}")));
+                            html.Add(head);
+                            xDoc.Add(html);
+
+                            response.AddHeader("Set-Cookie", $"seans_key={сеанс.код_сеанса.ToString()}");
+                            response.AppendHeader("Set-Cookie", $"user_login={пользователь.логин}");
+
+                            Отправка_ответа_на_запрос(response, "<!DOCTYPE HTML>\r\n" + xDoc, RawUrl);
                             Console.WriteLine($"Пользователь {пользователь.логин} вошел в систему.");
                             список_событий.Add(new Событие(пользователь.логин,$"Пользователь {пользователь.логин} вошел в систему.", 1));
                             return;
                         }
-                    case "/end_seans":
+                    case "/main_devices_admin":
                         {
-                            if (!Проверка_логина_и_кода_сеанса(RawUrl))
+                            if (!Проверка_логина_и_кода_сеанса_из_куки(request))
                             {
                                 Отправка_ответа_на_запрос(response, Загрузка_страницы("Авторизация.html"), RawUrl);
                                 return;
                             }
 
-                            string логин_из_запроса = Из_строки_по_ключу(RawUrl, "login");
-                            список_сеансов.Remove(Сеанс_из_запроса(RawUrl));
-                            Отправка_ответа_на_запрос(response, Загрузка_страницы("Авторизация.html"), RawUrl);
-                            Console.WriteLine($"Пользователь {логин_из_запроса} вышел из системы.");
-                            список_событий.Add(new Событие(логин_из_запроса, $"Пользователь {логин_из_запроса} вышел из системы.", 1));
+                            Сеанс сеанс = Сеанс_из_куки(request);
+                            сеанс.время_последнего_запроса = DateTime.Now;
+                            Пользователь пользователь = сеанс.пользователь;
+
+                            response.AddHeader("Set-Cookie", $"seans_key={сеанс.код_сеанса.ToString()}");
+                            response.AppendHeader("Set-Cookie", $"user_login={пользователь.логин}");
+                            response.AppendHeader("Set-Cookie", $"server_ip={request.Url.ToString().Remove(request.Url.ToString().IndexOf("16017") + 5)}");
+
+                            Отправка_ответа_на_запрос(response, Загрузка_страницы("Главная_устройства_администратор.html"), RawUrl);
+                            return;
+                        }
+                    case "/end_seans":
+                        {
+                            if (!Проверка_логина_и_кода_сеанса_из_куки(request))
+                            {
+                                Отправка_ответа_на_запрос(response, Загрузка_страницы("Авторизация.html"), RawUrl);
+                                return;
+                            }
+
+                            Сеанс сеанс = Сеанс_из_куки(request);
+                            список_сеансов.Remove(Сеанс_из_куки(request));
+                            XDocument xDoc = new XDocument();
+                            XElement html = new XElement("html");
+                            XElement head = new XElement("head",
+                                            new XElement("meta", new XAttribute("charset", "utf-8")),
+                                            new XElement("meta", new XAttribute("http-equiv", "refresh"), new XAttribute("content", $"0;URL={request.Url.ToString().Remove(request.Url.ToString().IndexOf("/"))}")));
+                            html.Add(head);
+                            xDoc.Add(html);
+
+                            Отправка_ответа_на_запрос(response, "<!DOCTYPE HTML>\r\n" + xDoc, RawUrl);
+                            Console.WriteLine($"Пользователь {сеанс.пользователь.логин} вышел из системы.");
+                            список_событий.Add(new Событие(сеанс.пользователь.логин, $"Пользователь {сеанс.пользователь.логин} вышел из системы.", 1));
                             return;
                         }
                     case "/get_tablo_status_counts":
                         {
-                            if (!Проверка_логина_и_кода_сеанса(RawUrl)) return;
+                            if (!Проверка_логина_и_кода_сеанса_из_куки(request)) return;
 
-                            Сеанс сеанс = Сеанс_из_запроса(RawUrl);
+                            Сеанс сеанс = Сеанс_из_куки(request);
                             if (сеанс == null) return;
                             сеанс.время_последнего_запроса = DateTime.Now;
 
@@ -1030,9 +1157,9 @@ namespace СерврерУстройств
                         }
                     case "/get_tablo_datas":
                         {
-                            if (!Проверка_логина_и_кода_сеанса(RawUrl)) return;
+                            if (!Проверка_логина_и_кода_сеанса_из_куки(request)) return;
 
-                            Сеанс сеанс = Сеанс_из_запроса(RawUrl);
+                            Сеанс сеанс = Сеанс_из_куки(request);
                             if (сеанс == null) return;
                             сеанс.время_последнего_запроса = DateTime.Now;
 
@@ -1051,6 +1178,56 @@ namespace СерврерУстройств
                             string data = JsonConvert.SerializeObject(данные, serializerSettings);
                             Отправка_ответа_на_запрос(response, data, RawUrl);
                             return;
+                        }
+                    case "/change_messages":
+                        {
+                            if (!Проверка_логина_и_кода_сеанса_из_куки(request)) return;
+
+                            Сеанс сеанс = Сеанс_из_куки(request);
+                            if (сеанс == null) return;
+                            сеанс.время_последнего_запроса = DateTime.Now;
+
+                            string сообщение = Из_строки_по_ключу(RawUrl, "string");
+                            string время_строкой = Из_строки_по_ключу(RawUrl, "created");
+                            DateTime time = new DateTime();
+                            DateTime время = DateTime.TryParse(время_строкой, out time) ? DateTime.Parse(время_строкой) : new DateTime(1,1,1);
+                            string временный_список_измененных_устройств = "";
+                            foreach (Устройство устройство in список_устройств)
+                            {
+                                if (Из_строки_по_ключу(RawUrl, "_snd_" + устройство.серийный_номер) == "true")
+                                {
+                                    устройство.сообщение_индивидуальное = сообщение;
+                                    устройство.время_показа_индивидуального_сообщения = время;
+                                    временный_список_измененных_устройств += "\r\n\t\t" + устройство.имя;
+                                }
+                            }
+
+                            string адрес_переадресации = "";
+
+                            switch (сеанс.пользователь.класс)
+                            {
+                                case "Admin":
+                                    адрес_переадресации = "/main_devices_admin";
+                                    break;
+                                case "COD":
+                                    break;
+                                case "EDDS":
+                                    break;
+                            }
+
+                            XDocument xDoc = new XDocument();
+                            XElement html = new XElement("html");
+                            XElement head = new XElement("head",
+                                            new XElement("meta", new XAttribute("charset", "utf-8")),
+                                            new XElement("meta", new XAttribute("http-equiv", "refresh"), new XAttribute("content", $"1;URL={request.Url.ToString().Remove(request.Url.ToString().IndexOf("/")) + адрес_переадресации}")));
+                            html.Add(head);
+                            xDoc.Add(html);
+
+                            Отправка_ответа_на_запрос(response, "<!DOCTYPE HTML>\r\n" + xDoc, RawUrl);
+
+                            Console.WriteLine($"Пользователь {сеанс.пользователь.логин} изменил индивидуальные сообщения в следующих устройствах:"+временный_список_измененных_устройств);
+                            список_событий.Add(new Событие(сеанс.пользователь.логин, $"Пользователь {сеанс.пользователь.логин} изменил индивидуальные сообщения в следующих устройствах:" + временный_список_измененных_устройств, 3));
+                            break;
                         }
                     case "/test":
                         {
@@ -1145,7 +1322,7 @@ namespace СерврерУстройств
                 return data;
             }
 
-            static bool Проверка_логина_и_кода_сеанса(string RawUrl)
+            static bool Проверка_логина_и_кода_сеанса_из_URL(string RawUrl)
             {
                 string логин_из_запроса = Из_строки_по_ключу(RawUrl, "login");
                 string номер_сеанса_из_запроса = Из_строки_по_ключу(RawUrl, "seans_key");
@@ -1184,17 +1361,58 @@ namespace СерврерУстройств
                 return true;
             }
 
-            static Сеанс Сеанс_из_запроса(string RawUrl)
+            static bool Проверка_логина_и_кода_сеанса_из_куки(HttpListenerRequest request)
+            {
+                string логин = "";
+                int номер_сеанса = 0;
+                try
+                {
+                    логин = request.Cookies["user_login"].Value;
+                    номер_сеанса = Int32.Parse(request.Cookies["seans_key"].Value);
+                }
+                catch(Exception e) { Console.WriteLine(e.Message); }
+
+                bool сеанс_распознан = false;
+                Сеанс сеанс = null;
+                foreach (Сеанс seans in список_сеансов)
+                {
+                    if (seans.код_сеанса == номер_сеанса)
+                    {
+                        сеанс = seans;
+                        сеанс_распознан = true;
+                        break;
+                    }
+                }
+
+                if (!сеанс_распознан)
+                {
+                    Console.WriteLine($"Ошибка обработки запроса. Сеанс не распознан. Обработка запроса прекращена.");
+                    список_событий.Add(new Событие($"Ошибка обработки запроса. Сеанс не распознан. Обработка запроса прекращена.", 31));
+                    return false;
+                }
+
+                if (сеанс.пользователь.логин != логин)
+                {
+                    Console.WriteLine($"Ошибка обработки запроса. Логин в запросе не совпадает с логином в активном сеансе. Обработка запроса прекращена.");
+                    список_событий.Add(new Событие($"Ошибка обработки запроса. Логин в запросе не совпадает с логином в активном сеансе. Обработка запроса прекращена.", 31));
+                    return false;
+                }
+                return true;
+            }
+
+            static Сеанс Сеанс_из_куки(HttpListenerRequest request)
             {
                 Сеанс сеанс = null;
-                string ключ_из_запроса = Из_строки_по_ключу(RawUrl, "seans_key");
-
-                if (!int.TryParse(ключ_из_запроса, out int n)) return сеанс;
-
+                int номер_сеанса = 0;
+                try
+                {
+                    номер_сеанса = Int32.Parse(request.Cookies["seans_key"].Value);
+                }
+                catch { }
 
                 foreach (Сеанс s in список_сеансов)
                 {
-                    if (s.код_сеанса == Int32.Parse(ключ_из_запроса))
+                    if (s.код_сеанса == номер_сеанса)
                     {
                         сеанс = s;
                         break;
@@ -1258,6 +1476,7 @@ namespace СерврерУстройств
             //коды событий
             //1-пользователь вошел
             //2-пользователь вышел
+            //3-пользователь внес изменения в устройства
             //10-ошибка записи файла
             //11-запись файла
             //12-ошибка чтения файла
@@ -1304,10 +1523,12 @@ namespace СерврерУстройств
             public string тип_сообщения { get; set; }
             public string сообщение_по_умолчанию { get; set; }
             public string сообщение_индивидуальное { get; set; }
+            public DateTime время_показа_индивидуального_сообщения { get; set; }
             public TimeSpan время_показа { get;set; }
             public List<DateTime> список_времени_выхода_на_связь { get; set; }
             public List<string> список_отображения_отправленных_скриптов { get; set; }
             public string имя_скрипта { get; set; }
+            public int код_обновления_скрипта { get; set; }
 
             public Устройство(string серийный_номер)
             {
@@ -1322,33 +1543,39 @@ namespace СерврерУстройств
                 сообщение_по_умолчанию = "";
                 сообщение_индивидуальное = "";
                 время_показа = new TimeSpan(0, 30, 0);
+                время_показа_индивидуального_сообщения = DateTime.Now;
                 список_времени_выхода_на_связь = new List<DateTime>();
                 список_отображения_отправленных_скриптов = new List<string>();
                 имя_скрипта = "";
+                код_обновления_скрипта = 0;
             }
         }
 
         class ДанныеУстройстваДляВеб
         {
-            public string серийный_номер { set; get; }
-            public string логин { get; set; }
-            public string имя { set; get; }
-            public string адрес { set; get; }
-            public string тип_сообщения { set; get; }
-            public string статус { set; get; }
-            public double широта { get; set; }
-            public double долгота { get; set; }
+            public string serial_number { set; get; }
+            public string login { get; set; }
+            public string name { set; get; }
+            public string address { set; get; }
+            public string type { set; get; }
+            public string status { set; get; }
+            public double latit { get; set; }
+            public double longit { get; set; }
+            public List<DateTime> times { get; set; }
+            public List<string> scripts { get; set; }
 
             public ДанныеУстройстваДляВеб(Устройство устройство)
             {
-                this.серийный_номер = устройство.серийный_номер;
-                this.логин = устройство.логин;
-                this.имя = устройство.имя;
-                this.адрес = устройство.адрес;
-                this.тип_сообщения = устройство.тип_сообщения;
-                this.статус = устройство.статус;
-                this.широта = устройство.широта;
-                this.долгота = устройство.долгота;
+                this.serial_number = устройство.серийный_номер;
+                this.login = устройство.логин;
+                this.name = устройство.имя;
+                this.address = устройство.адрес;
+                this.type = устройство.тип_сообщения;
+                this.status = устройство.статус;
+                this.latit = устройство.широта;
+                this.longit = устройство.долгота;
+                times = устройство.список_времени_выхода_на_связь;
+                scripts = устройство.список_отображения_отправленных_скриптов;
             }
         }
 
@@ -1565,7 +1792,7 @@ namespace СерврерУстройств
                                                "\"ws\": [{" +                                   //Массив свойств окон, из которых должна состоять сцена
                                                            "\"ls\": [{" +                       //Массив свойств слоев, которые содержатся внутри окна
                                                                        "\"ef\": \"rtl\", " +    //Тип эффекта, с которым воспроизводится текст (0 или “static” или “s" - статический текст; 1 или “right_to_left” или «rtl» - бегущая строка справа налево)
-                                                                       $"\"tx\": \"{текст_бегущей_строки}\"," +
+                                                                       $"\"tx\": \"{текст_бегущей_строки.Replace("\"","''")}\"," +
                                                                        "\"av\": \"b\", " +      //Выравнивание текста внутри слоя по вертикали(0 или “top” или “t” -по верху; 1 или ”bottom” или "b" - по низу, 2 или "center" или "c" - по центру)
                                                                        "\"sp\": 15, " +         //Скорость бежания для бегущей
                                                                        $"\"cr\": \"{цвет_бегущей_строки}\", " +//Цвет текста в слое("blue" или "b" - синий; "red" или "r" - красный; "green" или "g" - зеленый; "yellow" или "y" - желтый) цвет также может быть задан в виде hex значения для трех байт вида #RRGGBB (например #ffffff - белый)
@@ -1978,7 +2205,7 @@ namespace СерврерУстройств
                         for (int i = 0; i < данные_табло.маршруты.Count; i++)
                         {
                             if (i % количество_строк == 0)
-                                отображение_скрипта += "----------------------------------------\r\n";
+                                отображение_скрипта += "<br>----------------------------------------<br>";
                             string temp = данные_табло.маршруты[i].td_dirtitle.Length > 25 ? данные_табло.маршруты[i].td_dirtitle.Remove(25) : данные_табло.маршруты[i].td_dirtitle;
                             if (temp.Length < 25)
                                 while (temp.Length < 25) temp += " ";
@@ -1987,12 +2214,12 @@ namespace СерврерУстройств
                             DateTime dateTime2 = DateTime.Parse(данные_табло.маршруты[i].tc_arrivetime);
                             temp = ((dateTime2 - dateTime).Hours > 0 ? (dateTime2 - dateTime).Hours + " час" : (dateTime2 - dateTime).Minutes + " мин");
                             if (temp.Length < 6) temp = " " + temp;
-                            отображение_скрипта += temp + "\r\n";
+                            отображение_скрипта += temp + "<br>";
                         }
                     }
                     else
                     {
-                        отображение_скрипта += "Данные о маршрутах отсутствуют\r\n";
+                        отображение_скрипта += "<br>Данные о маршрутах отсутствуют<br>";
                     }
                 }
                 else
@@ -2000,15 +2227,15 @@ namespace СерврерУстройств
                     for (int i = 0; i < строки_сообщения.Count; i++)
                     {
                         if (i % количество_строк == 0)
-                            отображение_скрипта += "----------------------------------------\r\n";
-                        отображение_скрипта += строки_сообщения[i] + "/r/n";
+                            отображение_скрипта += "<br>----------------------------------------<br>";
+                        отображение_скрипта += строки_сообщения[i] + "<br>";
                     }
                 }
-                отображение_скрипта += "----------------------------------------\r\n";
+                отображение_скрипта += "----------------------------------------<br>";
 
                 for (int i = 0; i < текст_бегущей_строки.Length; i += 36)
                 {
-                    текст_бегущей_строки = текст_бегущей_строки.Insert(i, "\r\n");
+                    текст_бегущей_строки = текст_бегущей_строки.Insert(i, "<br>");
                 }
                 отображение_скрипта += текст_бегущей_строки;
                 устройство.список_отображения_отправленных_скриптов.Insert(0, отображение_скрипта);
@@ -2155,5 +2382,6 @@ namespace СерврерУстройств
                 табло = new List<string>();
             }
         }
+
     }
 }
