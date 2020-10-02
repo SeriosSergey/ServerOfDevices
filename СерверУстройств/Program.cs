@@ -122,6 +122,7 @@ namespace СерврерУстройств
                         {
                             Console.WriteLine($"Пользователь {список_сеансов[i].пользователь.логин} вышел из системы в связи с бездействием.");
                             список_событий.Add(new Событие(список_сеансов[i].пользователь.логин, $"Пользователь {список_сеансов[i].пользователь.логин} вышел из системы в связи с бездействием.", 2));
+                            список_сеансов[i].пользователь.онлайн = false;
                             список_сеансов.RemoveAt(i);
                         }
                         else
@@ -254,7 +255,6 @@ namespace СерврерУстройств
             JsonSerializerSettings serializerSettings = new JsonSerializerSettings
             {
                 Formatting = Newtonsoft.Json.Formatting.Indented,
-                DateFormatString = "dd.MM.yyyy HH:mm:ss"
             };
             string data = JsonConvert.SerializeObject(список_устройств, serializerSettings);
 
@@ -347,7 +347,7 @@ namespace СерврерУстройств
 
             try
             {
-                using (FileStream fstream = new FileStream($"{path}\\Events.bsv", FileMode.OpenOrCreate))
+                using (FileStream fstream = new FileStream($"{path}\\Events1.bsv", FileMode.OpenOrCreate))
                 {
                     // преобразуем строку в байты
                     byte[] array = System.Text.Encoding.Default.GetBytes(data);
@@ -361,6 +361,27 @@ namespace СерврерУстройств
                 список_событий.Add(new Событие("Ошибка при записи данных о событиях\r\n" + e.Message, 10));
                 return;
             }
+
+            try
+            {
+                using (FileStream fstream = File.OpenRead($"{path}\\Events1.bsv"))
+                {
+                    // преобразуем строку в байты
+                    byte[] array = new byte[fstream.Length];
+                    // считываем данные
+                    fstream.Read(array, 0, array.Length);
+                    // декодируем байты в строку
+                    data = System.Text.Encoding.Default.GetString(array);
+                }
+
+                Событие[] события = JsonConvert.DeserializeObject<Событие[]>(data);
+            }
+            catch
+            {
+                Запись_событий_на_диск();
+            }
+            File.Delete($"{path}\\Events.bsv");
+            File.Move($"{path}\\Events1.bsv", $"{path}\\Events.bsv");
 
             Console.WriteLine("Список событий сохранен в файл.");
             список_событий.Add(new Событие("Список событий сохранен в файл.", 11));
@@ -902,16 +923,18 @@ namespace СерврерУстройств
                             данные_об_ошибках.количество_запросов++;
 
                             string статус = Из_строки_по_ключу(RawUrl, "_status_");
-
+                            int[] код_ошибки = new int[3] { 0, 0, 0 };
                             if (статус != "")
                             {
-                                данные_об_ошибках.код_последней_ошибки= статус.Split(' ').
+                                
+                                код_ошибки = статус.Split(' ').
                                             Where(x => !string.IsNullOrWhiteSpace(x)).
                                             Select(x => int.Parse(x)).ToArray();
                             }
 
-                            if (данные_об_ошибках.код_последней_ошибки[0] != 0)
+                            if (код_ошибки[0] != 0)
                             {
+                                данные_об_ошибках.код_последней_ошибки = код_ошибки;
                                 данные_об_ошибках.количество_ошибок++;
                                 данные_об_ошибках.коды_ошибок[данные_об_ошибках.код_последней_ошибки[0]]++;
                                 устройство.статус = "err";
@@ -997,7 +1020,11 @@ namespace СерврерУстройств
                                 список_событий.Add(new Событие(устройство.имя, $"Ошибка обработки запроса от устройства \"{устройство.имя}\"." + e.Message, 33));
                             }
 
-                            устройство.код_обновления_скрипта = 0;
+                            if (устройство.код_обновления_скрипта != 0)
+                            {
+                                устройство.код_обновления_скрипта = 0;
+                                Запись_устройств_на_диск();
+                            }
                             return;
                         }
                     default:
@@ -1023,7 +1050,7 @@ namespace СерврерУстройств
                             if (пользователь.логин == "" || пользователь.пароль != пароль_из_запроса)
                             {
                                 Cookie cookie = new Cookie("err", $"1+{логин_из_запроса}");
-                                cookie.Expires = DateTime.Now + new TimeSpan(48, 0, 0);
+                                cookie.Expires = DateTime.Now + new TimeSpan(0, 0, 2);
                                 response.SetCookie(cookie);
 
                                 Отправка_ответа_на_запрос(response, Загрузка_страницы("Авторизация.html"), RawUrl);
@@ -1055,33 +1082,36 @@ namespace СерврерУстройств
                             Сеанс сеанс = new Сеанс(пользователь);
                             список_сеансов.Add(сеанс);
 
-                            string адрес_переадресации = "";
-
-                            switch (пользователь.класс)
-                            {
-                                case "Admin":
-                                    адрес_переадресации = "/main_devices_admin";
-                                    break;
-                                case "COD":
-                                    break;
-                                case "EDDS":
-                                    break;
-                            }
-
-                            XDocument xDoc = new XDocument();
-                            XElement html = new XElement("html");
-                            XElement head = new XElement("head",
-                                            new XElement("meta", new XAttribute("charset", "utf-8")),
-                                            new XElement("meta", new XAttribute("http-equiv", "refresh"), new XAttribute("content", $"1;URL={request.Url.ToString().Remove(request.Url.ToString().IndexOf("/")) + адрес_переадресации}")));
-                            html.Add(head);
-                            xDoc.Add(html);
+                            string адрес_переадресации = Выбор_адреса_в_зависимости_от_класса_пользователя(пользователь);
 
                             response.AddHeader("Set-Cookie", $"seans_key={сеанс.код_сеанса.ToString()}");
                             response.AppendHeader("Set-Cookie", $"user_login={пользователь.логин}");
 
-                            Отправка_ответа_на_запрос(response, "<!DOCTYPE HTML>\r\n" + xDoc, RawUrl);
+                            Отправка_ответа_на_запрос(response, Переадресация(0,null, request.Url.ToString().Remove(request.Url.ToString().IndexOf("/")) + адрес_переадресации), RawUrl);
                             Console.WriteLine($"Пользователь {пользователь.логин} вошел в систему.");
                             список_событий.Add(new Событие(пользователь.логин,$"Пользователь {пользователь.логин} вошел в систему.", 1));
+                            пользователь.онлайн = true;
+                            return;
+                        }
+                    case "/devices":
+                        {
+                            if (!Проверка_логина_и_кода_сеанса_из_куки(request))
+                            {
+                                Отправка_ответа_на_запрос(response, Загрузка_страницы("Авторизация.html"), RawUrl);
+                                return;
+                            }
+
+                            Сеанс сеанс = Сеанс_из_куки(request);
+                            сеанс.время_последнего_запроса = DateTime.Now;
+                            Пользователь пользователь = сеанс.пользователь;
+
+                            response.AddHeader("Set-Cookie", $"seans_key={сеанс.код_сеанса.ToString()}");
+                            response.AppendHeader("Set-Cookie", $"user_login={пользователь.логин}");
+                            response.AppendHeader("Set-Cookie", $"server_ip={request.Url.ToString().Remove(request.Url.ToString().IndexOf("16017") + 5)}");
+
+                            string адрес_переадресации = Выбор_адреса_в_зависимости_от_класса_пользователя(сеанс.пользователь);
+
+                            Отправка_ответа_на_запрос(response, Переадресация(0, null, request.Url.ToString().Remove(request.Url.ToString().IndexOf("/")) + адрес_переадресации), RawUrl);
                             return;
                         }
                     case "/main_devices_admin":
@@ -1103,6 +1133,25 @@ namespace СерврерУстройств
                             Отправка_ответа_на_запрос(response, Загрузка_страницы("Главная_устройства_администратор.html"), RawUrl);
                             return;
                         }
+                    case "/main_devices_cod":
+                        {
+                            if (!Проверка_логина_и_кода_сеанса_из_куки(request))
+                            {
+                                Отправка_ответа_на_запрос(response, Загрузка_страницы("Авторизация.html"), RawUrl);
+                                return;
+                            }
+
+                            Сеанс сеанс = Сеанс_из_куки(request);
+                            сеанс.время_последнего_запроса = DateTime.Now;
+                            Пользователь пользователь = сеанс.пользователь;
+
+                            response.AddHeader("Set-Cookie", $"seans_key={сеанс.код_сеанса.ToString()}");
+                            response.AppendHeader("Set-Cookie", $"user_login={пользователь.логин}");
+                            response.AppendHeader("Set-Cookie", $"server_ip={request.Url.ToString().Remove(request.Url.ToString().IndexOf("16017") + 5)}");
+
+                            Отправка_ответа_на_запрос(response, Загрузка_страницы("Главная_устройства_цод.html"), RawUrl);
+                            return;
+                        }
                     case "/end_seans":
                         {
                             if (!Проверка_логина_и_кода_сеанса_из_куки(request))
@@ -1112,16 +1161,15 @@ namespace СерврерУстройств
                             }
 
                             Сеанс сеанс = Сеанс_из_куки(request);
-                            список_сеансов.Remove(Сеанс_из_куки(request));
-                            XDocument xDoc = new XDocument();
-                            XElement html = new XElement("html");
-                            XElement head = new XElement("head",
-                                            new XElement("meta", new XAttribute("charset", "utf-8")),
-                                            new XElement("meta", new XAttribute("http-equiv", "refresh"), new XAttribute("content", $"0;URL={request.Url.ToString().Remove(request.Url.ToString().IndexOf("/"))}")));
-                            html.Add(head);
-                            xDoc.Add(html);
-
-                            Отправка_ответа_на_запрос(response, "<!DOCTYPE HTML>\r\n" + xDoc, RawUrl);
+                            for (int i = 0; i < список_сеансов.Count; i++)
+                            {
+                                if (список_сеансов[i].код_сеанса == сеанс.код_сеанса)
+                                {
+                                    список_сеансов.RemoveAt(i);
+                                    break;
+                                }
+                            }
+                            Отправка_ответа_на_запрос(response, Переадресация(0,null, request.Url.ToString().Remove(request.Url.ToString().LastIndexOf("/"))), RawUrl);
                             Console.WriteLine($"Пользователь {сеанс.пользователь.логин} вышел из системы.");
                             список_событий.Add(new Событие(сеанс.пользователь.логин, $"Пользователь {сеанс.пользователь.логин} вышел из системы.", 1));
                             return;
@@ -1162,12 +1210,34 @@ namespace СерврерУстройств
                             Сеанс сеанс = Сеанс_из_куки(request);
                             if (сеанс == null) return;
                             сеанс.время_последнего_запроса = DateTime.Now;
+                            string серийный_номер_из_запроса = Из_строки_по_ключу(RawUrl, "_snd_");
 
                             List<ДанныеУстройстваДляВеб> данные = new List<ДанныеУстройстваДляВеб>();
-                            foreach (Устройство устройство in список_устройств)
+
+                            if (серийный_номер_из_запроса == "")
                             {
-                                ДанныеУстройстваДляВеб данныеУстройства = new ДанныеУстройстваДляВеб(устройство);
-                                данные.Add(данныеУстройства);
+                                foreach (Устройство устройство in список_устройств)
+                                {
+                                    ДанныеУстройстваДляВеб данныеУстройства = new ДанныеУстройстваДляВеб(устройство);
+                                    данные.Add(данныеУстройства);
+                                }
+                            }
+                            else
+                            {
+                                Устройство устройство = null;
+                                foreach (Устройство dev in список_устройств)
+                                {
+                                    if (dev.серийный_номер == серийный_номер_из_запроса)
+                                    {
+                                        устройство = dev;
+                                        break;
+                                    }
+                                }
+                                if (устройство != null)
+                                {
+                                    ДанныеУстройстваДляВеб данныеУстройства = new ДанныеУстройстваДляВеб(устройство);
+                                    данные.Add(данныеУстройства);
+                                }
                             }
 
                             JsonSerializerSettings serializerSettings = new JsonSerializerSettings
@@ -1179,9 +1249,41 @@ namespace СерврерУстройств
                             Отправка_ответа_на_запрос(response, data, RawUrl);
                             return;
                         }
-                    case "/change_messages":
+                    case "/get_errors_data":
                         {
                             if (!Проверка_логина_и_кода_сеанса_из_куки(request)) return;
+
+                            Сеанс сеанс = Сеанс_из_куки(request);
+                            if (сеанс == null) return;
+                            сеанс.время_последнего_запроса = DateTime.Now;
+                            string серийный_номер_из_запроса = Из_строки_по_ключу(RawUrl, "_snd_");
+
+                            СписокОшибокУстройства списокОшибок = null;
+                            foreach (СписокОшибокУстройства список in список_ошибок)
+                            {
+                                if (список.серийный_номер == серийный_номер_из_запроса)
+                                {
+                                    списокОшибок = список;
+                                    break;
+                                }
+                            }
+
+                            JsonSerializerSettings serializerSettings = new JsonSerializerSettings
+                            {
+                                Formatting = Newtonsoft.Json.Formatting.Indented,
+                                DateFormatString = "dd.MM.yyyy HH:mm:ss"
+                            };
+                            string data = JsonConvert.SerializeObject(списокОшибок, serializerSettings);
+                            Отправка_ответа_на_запрос(response, data, RawUrl);
+                            return;
+                        }
+                    case "/change_messages":
+                        {
+                            if (!Проверка_логина_и_кода_сеанса_из_куки(request))
+                            {
+                                Отправка_ответа_на_запрос(response, Загрузка_страницы("Авторизация.html"), RawUrl);
+                                return;
+                            }
 
                             Сеанс сеанс = Сеанс_из_куки(request);
                             if (сеанс == null) return;
@@ -1198,36 +1300,822 @@ namespace СерврерУстройств
                                 {
                                     устройство.сообщение_индивидуальное = сообщение;
                                     устройство.время_показа_индивидуального_сообщения = время;
-                                    временный_список_измененных_устройств += "\r\n\t\t" + устройство.имя;
+                                    временный_список_измененных_устройств += ", \r\n\t\t" + устройство.имя;
                                 }
                             }
 
-                            string адрес_переадресации = "";
+                            string адрес_переадресации = Выбор_адреса_в_зависимости_от_класса_пользователя(сеанс.пользователь);
 
-                            switch (сеанс.пользователь.класс)
+                            Отправка_ответа_на_запрос(response, Переадресация(0,null, request.Url.ToString().Remove(request.Url.ToString().IndexOf("/")) + адрес_переадресации), RawUrl);
+                            Запись_устройств_на_диск();
+                            Console.WriteLine($"Пользователь {сеанс.пользователь.логин} изменил индивидуальное сообщение в следующих устройствах:"+временный_список_измененных_устройств);
+                            список_событий.Add(new Событие(сеанс.пользователь.логин, $"Пользователь {сеанс.пользователь.логин} изменил индивидуальное сообщение в следующих устройствах:" + временный_список_измененных_устройств, 3));
+                            break;
+                        }
+                    case "/device":
+                        {
+                            if (!Проверка_логина_и_кода_сеанса_из_куки(request))
                             {
-                                case "Admin":
-                                    адрес_переадресации = "/main_devices_admin";
-                                    break;
-                                case "COD":
-                                    break;
-                                case "EDDS":
-                                    break;
+                                Отправка_ответа_на_запрос(response, Загрузка_страницы("Авторизация.html"), RawUrl);
+                                return;
                             }
 
-                            XDocument xDoc = new XDocument();
-                            XElement html = new XElement("html");
-                            XElement head = new XElement("head",
-                                            new XElement("meta", new XAttribute("charset", "utf-8")),
-                                            new XElement("meta", new XAttribute("http-equiv", "refresh"), new XAttribute("content", $"1;URL={request.Url.ToString().Remove(request.Url.ToString().IndexOf("/")) + адрес_переадресации}")));
-                            html.Add(head);
-                            xDoc.Add(html);
+                            Сеанс сеанс = Сеанс_из_куки(request);
+                            if (сеанс == null) return;
+                            сеанс.время_последнего_запроса = DateTime.Now;
 
-                            Отправка_ответа_на_запрос(response, "<!DOCTYPE HTML>\r\n" + xDoc, RawUrl);
+                            response.AddHeader("Set-Cookie", $"seans_key={сеанс.код_сеанса.ToString()}");
+                            response.AppendHeader("Set-Cookie", $"user_login={сеанс.пользователь.логин}");
+                            response.AppendHeader("Set-Cookie", $"server_ip={request.Url.ToString().Remove(request.Url.ToString().IndexOf("16017") + 5)}");
 
-                            Console.WriteLine($"Пользователь {сеанс.пользователь.логин} изменил индивидуальные сообщения в следующих устройствах:"+временный_список_измененных_устройств);
-                            список_событий.Add(new Событие(сеанс.пользователь.логин, $"Пользователь {сеанс.пользователь.логин} изменил индивидуальные сообщения в следующих устройствах:" + временный_список_измененных_устройств, 3));
-                            break;
+                            string серийный_номер_из_запроса = Из_строки_по_ключу(RawUrl, "_snd_");
+
+                            Устройство устройство = null;
+                            foreach (Устройство dev in список_устройств)
+                            {
+                                if (dev.серийный_номер == серийный_номер_из_запроса)
+                                {
+                                    устройство = dev;
+                                    break;
+                                }
+                            }
+
+                            if (устройство == null)
+                            {
+                                Отправка_ответа_на_запрос(response, Переадресация(5, $"Внутренняя ошибка. Устройство с серийным номером {серийный_номер_из_запроса} не найдено.",
+                                    request.Url.ToString().Remove(request.Url.ToString().IndexOf("/")) + Выбор_адреса_в_зависимости_от_класса_пользователя(сеанс.пользователь)), RawUrl);
+                                return;
+                            }
+
+                            response.AppendHeader("Set-Cookie", $"data={устройство.серийный_номер}; Max-age=5");
+                            Отправка_ответа_на_запрос(response, Загрузка_страницы("Страница_устройства.html"), RawUrl);
+                            return;
+                        }
+                    case "/change_device":
+                        {
+                            if (!Проверка_логина_и_кода_сеанса_из_куки(request))
+                            {
+                                Отправка_ответа_на_запрос(response, Загрузка_страницы("Авторизация.html"), RawUrl);
+                                return;
+                            }
+
+                            Сеанс сеанс = Сеанс_из_куки(request);
+                            if (сеанс == null) return;
+                            сеанс.время_последнего_запроса = DateTime.Now;
+
+                            response.AddHeader("Set-Cookie", $"seans_key={сеанс.код_сеанса.ToString()}");
+                            response.AppendHeader("Set-Cookie", $"user_login={сеанс.пользователь.логин}");
+                            response.AppendHeader("Set-Cookie", $"server_ip={request.Url.ToString().Remove(request.Url.ToString().IndexOf("16017") + 5)}");
+
+                            string серийный_номер_из_запроса = Из_строки_по_ключу(RawUrl, "serial_number");
+
+                            Устройство устройство = null;
+                            foreach (Устройство dev in список_устройств)
+                            {
+                                if (dev.серийный_номер == серийный_номер_из_запроса)
+                                {
+                                    устройство = dev;
+                                    break;
+                                }
+                            }
+
+                            if (устройство == null)
+                            {
+                                 Отправка_ответа_на_запрос(response, Переадресация(5, $"Внутренняя ошибка. Устройство с серийным номером {серийный_номер_из_запроса} не найдено.",
+                                     request.Url.ToString().Remove(request.Url.ToString().LastIndexOf("/change_device?")) +
+                                     Выбор_адреса_в_зависимости_от_класса_пользователя(сеанс.пользователь)), RawUrl);
+                                return;
+                            }
+
+                            устройство.имя = Из_строки_по_ключу(RawUrl,"name");
+                            устройство.логин = Из_строки_по_ключу(RawUrl, "login");
+                            устройство.пароль = Из_строки_по_ключу(RawUrl, "password");
+                            устройство.телефон = Из_строки_по_ключу(RawUrl, "phone");
+                            устройство.адрес = Из_строки_по_ключу(RawUrl, "address");
+                            double temp;
+                            устройство.широта = double.TryParse(Из_строки_по_ключу(RawUrl, "latitude").Replace(".",","),out temp)?double.Parse(Из_строки_по_ключу(RawUrl, "latitude").Replace(".", ",")) : 56.838607;
+                            устройство.долгота = double.TryParse(Из_строки_по_ключу(RawUrl, "longitude").Replace(".", ","), out temp) ? double.Parse(Из_строки_по_ключу(RawUrl, "longitude").Replace(".", ",")) : 60.605514;
+                            устройство.тип_сообщения = Из_строки_по_ключу(RawUrl, "message_type");
+                            устройство.сообщение_по_умолчанию = Из_строки_по_ключу(RawUrl, "default_message");
+                            устройство.сообщение_индивидуальное = Из_строки_по_ключу(RawUrl, "individual_message");
+                            DateTime temp_time;
+                            устройство.время_показа_индивидуального_сообщения = DateTime.TryParse(Из_строки_по_ключу(RawUrl, "individual_message_time"),out temp_time)?
+                                DateTime.Parse(Из_строки_по_ключу(RawUrl, "individual_message_time")):DateTime.Now;
+                            int temp_int;
+                            устройство.время_показа = new TimeSpan(0, (int.TryParse(Из_строки_по_ключу(RawUrl, "marshrut_time"), out temp_int) ? int.Parse(Из_строки_по_ключу(RawUrl, "marshrut_time")) : 0), 0);
+                            устройство.код_обновления_скрипта = int.TryParse(Из_строки_по_ключу(RawUrl, "script_code"), out temp_int) ? int.Parse(Из_строки_по_ключу(RawUrl, "script_code")) : 0;
+                            устройство.комментарий = Из_строки_по_ключу(RawUrl, "comment");
+
+                            string адрес_переадресации = Выбор_адреса_в_зависимости_от_класса_пользователя(сеанс.пользователь);
+
+                            Отправка_ответа_на_запрос(response, Переадресация(5,"Изменения сохранены", request.Url.ToString().Remove(request.Url.ToString().LastIndexOf("/change_device?"))+ 
+                                Выбор_адреса_в_зависимости_от_класса_пользователя(сеанс.пользователь)), RawUrl);
+
+                            Запись_устройств_на_диск();
+
+                            Console.WriteLine($"Пользователь {сеанс.пользователь.логин} внес изменения в устройство с серийным номером " +устройство.серийный_номер);
+                            список_событий.Add(new Событие(сеанс.пользователь.логин, $"Пользователь {сеанс.пользователь.логин} внес изменения в устройство с серийным номером " + устройство.серийный_номер, 3));
+                            return;
+                        }
+                    case "/new_device":
+                        {
+                            if (!Проверка_логина_и_кода_сеанса_из_куки(request))
+                            {
+                                Отправка_ответа_на_запрос(response, Загрузка_страницы("Авторизация.html"), RawUrl);
+                                return;
+                            }
+
+                            Сеанс сеанс = Сеанс_из_куки(request);
+                            if (сеанс == null) return;
+                            сеанс.время_последнего_запроса = DateTime.Now;
+
+                            response.AddHeader("Set-Cookie", $"seans_key={сеанс.код_сеанса.ToString()}");
+                            response.AppendHeader("Set-Cookie", $"user_login={сеанс.пользователь.логин}");
+                            response.AppendHeader("Set-Cookie", $"server_ip={request.Url.ToString().Remove(request.Url.ToString().IndexOf("16017") + 5)}");
+
+                            if (список_устройств.Count > 0)
+                            {
+                                response.AppendHeader("Set-Cookie", $"data={список_устройств[0].серийный_номер}; Max-age=5");
+                            }
+
+                            Отправка_ответа_на_запрос(response, Загрузка_страницы("Страница_нового_устройства.html"), RawUrl);
+                            return;
+                        }
+                    case "/add_device":
+                        {
+                            if (!Проверка_логина_и_кода_сеанса_из_куки(request))
+                            {
+                                Отправка_ответа_на_запрос(response, Загрузка_страницы("Авторизация.html"), RawUrl);
+                                return;
+                            }
+
+                            Сеанс сеанс = Сеанс_из_куки(request);
+                            if (сеанс == null) return;
+                            сеанс.время_последнего_запроса = DateTime.Now;
+
+                            response.AddHeader("Set-Cookie", $"seans_key={сеанс.код_сеанса.ToString()}");
+                            response.AppendHeader("Set-Cookie", $"user_login={сеанс.пользователь.логин}");
+                            response.AppendHeader("Set-Cookie", $"server_ip={request.Url.ToString().Remove(request.Url.ToString().IndexOf("16017") + 5)}");
+
+                            string серийный_номер_из_запроса = Из_строки_по_ключу(RawUrl, "serial_number");
+                            foreach (Устройство dev in список_устройств)
+                            {
+                                if (dev.серийный_номер == серийный_номер_из_запроса)
+                                {
+                                    Отправка_ответа_на_запрос(response, Переадресация(5, $"Новое устройство не создано! Устройство с серийным номером {серийный_номер_из_запроса} уже существует.",
+                                        request.Url.ToString().Remove(request.Url.ToString().LastIndexOf("/add_device?")) + "/new_device"), RawUrl);
+                                    return;
+                                }
+                            }
+
+                            string имя_из_запроса = Из_строки_по_ключу(RawUrl, "name");
+                            foreach (Устройство dev in список_устройств)
+                            {
+                                if (dev.имя == имя_из_запроса)
+                                {
+                                    Отправка_ответа_на_запрос(response, Переадресация(5, $"Новое устройство не создано! Устройство с именем {имя_из_запроса} уже существует.",
+                                        request.Url.ToString().Remove(request.Url.ToString().LastIndexOf("/add_device?")) + "/new_device"), RawUrl);
+                                    return;
+                                }
+                            }
+
+                            Устройство устройство = new Устройство(серийный_номер_из_запроса);
+                            устройство.имя = имя_из_запроса;
+                            устройство.логин = Из_строки_по_ключу(RawUrl, "login");
+                            устройство.пароль = Из_строки_по_ключу(RawUrl, "password");
+                            устройство.телефон = Из_строки_по_ключу(RawUrl, "phone");
+                            устройство.адрес = Из_строки_по_ключу(RawUrl, "address");
+                            double temp;
+                            устройство.широта = double.TryParse(Из_строки_по_ключу(RawUrl, "latitude").Replace(".", ","), out temp) ? double.Parse(Из_строки_по_ключу(RawUrl, "latitude").Replace(".", ",")) : 56.838607;
+                            устройство.долгота = double.TryParse(Из_строки_по_ключу(RawUrl, "longitude").Replace(".", ","), out temp) ? double.Parse(Из_строки_по_ключу(RawUrl, "longitude").Replace(".", ",")) : 60.605514;
+                            устройство.тип_сообщения = Из_строки_по_ключу(RawUrl, "message_type");
+                            устройство.сообщение_по_умолчанию = Из_строки_по_ключу(RawUrl, "default_message");
+                            устройство.сообщение_индивидуальное = Из_строки_по_ключу(RawUrl, "individual_message");
+                            DateTime temp_time;
+                            устройство.время_показа_индивидуального_сообщения = DateTime.TryParse(Из_строки_по_ключу(RawUrl, "individual_message_time"), out temp_time) ?
+                                DateTime.Parse(Из_строки_по_ключу(RawUrl, "individual_message_time")) : DateTime.Now;
+                            int temp_int;
+                            устройство.время_показа = new TimeSpan(0, (int.TryParse(Из_строки_по_ключу(RawUrl, "marshrut_time"), out temp_int) ? int.Parse(Из_строки_по_ключу(RawUrl, "marshrut_time")) : 0), 0);
+                            устройство.код_обновления_скрипта = int.TryParse(Из_строки_по_ключу(RawUrl, "script_code"), out temp_int) ? int.Parse(Из_строки_по_ключу(RawUrl, "script_code")) : 0;
+                            устройство.комментарий = Из_строки_по_ключу(RawUrl, "comment");
+
+                            список_устройств.Add(устройство);
+
+                            Отправка_ответа_на_запрос(response, Переадресация(5, "Новое устройство создано", request.Url.ToString().Remove(request.Url.ToString().LastIndexOf("/add_device?")) +
+                                Выбор_адреса_в_зависимости_от_класса_пользователя(сеанс.пользователь)), RawUrl);
+
+                            Запись_устройств_на_диск();
+
+                            Console.WriteLine($"Пользователь {сеанс.пользователь.логин} создал новое устройство с серийным номером " + устройство.серийный_номер);
+                            список_событий.Add(new Событие(сеанс.пользователь.логин, $"Пользователь {сеанс.пользователь.логин} создал новое устройство с серийным номером " + устройство.серийный_номер, 3));
+                            return;
+                        }
+                    case "/del_device":
+                        {
+                            if (!Проверка_логина_и_кода_сеанса_из_куки(request))
+                            {
+                                Отправка_ответа_на_запрос(response, Загрузка_страницы("Авторизация.html"), RawUrl);
+                                return;
+                            }
+
+                            Сеанс сеанс = Сеанс_из_куки(request);
+                            if (сеанс == null) return;
+                            сеанс.время_последнего_запроса = DateTime.Now;
+
+                            response.AddHeader("Set-Cookie", $"seans_key={сеанс.код_сеанса.ToString()}");
+                            response.AppendHeader("Set-Cookie", $"user_login={сеанс.пользователь.логин}");
+                            response.AppendHeader("Set-Cookie", $"server_ip={request.Url.ToString().Remove(request.Url.ToString().IndexOf("16017") + 5)}");
+
+                            string серийный_номер_из_запроса = Из_строки_по_ключу(RawUrl, "serial_number");
+
+                            Устройство устройство = null;
+                            foreach (Устройство dev in список_устройств)
+                            {
+                                if (dev.серийный_номер == серийный_номер_из_запроса)
+                                {
+                                    устройство = dev;
+                                    break;
+                                }
+                            }
+
+                            if (устройство == null)
+                            {
+                                Отправка_ответа_на_запрос(response, Переадресация(5, $"Устройство не удалено! Устройство с серийным номером {серийный_номер_из_запроса} не найдено.",
+                                       request.Url.ToString().Remove(request.Url.ToString().LastIndexOf("/del_device?")) + "/devices"), RawUrl);
+                                return;
+                            }
+
+                            список_устройств.Remove(устройство);
+
+                            Запись_устройств_на_диск();
+
+                            Console.WriteLine($"Пользователь {сеанс.пользователь.логин} удалил устройство с серийным номером " + устройство.серийный_номер);
+                            список_событий.Add(new Событие(сеанс.пользователь.логин, $"Пользователь {сеанс.пользователь.логин} удалил устройство с серийным номером " + устройство.серийный_номер, 3));
+
+                            Отправка_ответа_на_запрос(response, Переадресация(5, $"Устройство с серийным номером {серийный_номер_из_запроса} было удалено.",
+                                      request.Url.ToString().Remove(request.Url.ToString().LastIndexOf("/del_device?")) + "/devices"), RawUrl);
+                            return;
+                        }
+                    case "/users":
+                        {
+                            if (!Проверка_логина_и_кода_сеанса_из_куки(request))
+                            {
+                                Отправка_ответа_на_запрос(response, Загрузка_страницы("Авторизация.html"), RawUrl);
+                                return;
+                            }
+
+                            Сеанс сеанс = Сеанс_из_куки(request);
+                            if (сеанс == null) return;
+                            сеанс.время_последнего_запроса = DateTime.Now;
+
+                            response.AddHeader("Set-Cookie", $"seans_key={сеанс.код_сеанса.ToString()}");
+                            response.AppendHeader("Set-Cookie", $"user_login={сеанс.пользователь.логин}");
+                            response.AppendHeader("Set-Cookie", $"server_ip={request.Url.ToString().Remove(request.Url.ToString().IndexOf("16017") + 5)}");
+
+                            Отправка_ответа_на_запрос(response, Загрузка_страницы("Пользователи.html"), RawUrl);
+                            return;
+                        }
+                    case "/get_users_datas":
+                        {
+                            if (!Проверка_логина_и_кода_сеанса_из_куки(request)) return;
+                            
+                            JsonSerializerSettings serializerSettings = new JsonSerializerSettings
+                            {
+                                Formatting = Newtonsoft.Json.Formatting.Indented,
+                                DateFormatString = "dd.MM.yyyy HH:mm:ss"
+                            };
+                            string логин_из_запроса = Из_строки_по_ключу(RawUrl, "login");
+
+                            string data = "";
+                            if (логин_из_запроса == "")
+                                data = JsonConvert.SerializeObject(список_пользователей, serializerSettings);
+                            else
+                            {
+                                List<Пользователь> список = new List<Пользователь>();
+                                foreach (Пользователь пользователь in список_пользователей)
+                                {
+                                    if (пользователь.логин == логин_из_запроса)
+                                    {
+                                        список.Add(пользователь);
+                                        break;
+                                    }
+                                }
+                                data = JsonConvert.SerializeObject(список, serializerSettings);
+                            }
+                            Отправка_ответа_на_запрос(response, data, RawUrl);
+                            return;
+                        }
+                    case "/get_user_events":
+                        {
+                            if (!Проверка_логина_и_кода_сеанса_из_куки(request)) return;
+                            string логин_из_запроса = Из_строки_по_ключу(RawUrl, "login");
+                            List<Событие> список = new List<Событие>();
+                            
+                            foreach (Событие событие in список_событий)
+                            {
+                                if (событие.пользователь == логин_из_запроса)
+                                {
+                                    список.Add(событие);
+                                }
+                            }
+                            JsonSerializerSettings serializerSettings = new JsonSerializerSettings
+                            {
+                                Formatting = Newtonsoft.Json.Formatting.Indented,
+                                DateFormatString = "dd.MM.yyyy HH:mm:ss"
+                            };
+                            string data = JsonConvert.SerializeObject(список, serializerSettings);
+                            Отправка_ответа_на_запрос(response, data, RawUrl);
+                            return;
+                        }
+                    case "/user":
+                        {
+                            if (!Проверка_логина_и_кода_сеанса_из_куки(request))
+                            {
+                                Отправка_ответа_на_запрос(response, Загрузка_страницы("Авторизация.html"), RawUrl);
+                                return;
+                            }
+
+                            Сеанс сеанс = Сеанс_из_куки(request);
+                            if (сеанс == null) return;
+                            сеанс.время_последнего_запроса = DateTime.Now;
+
+                            response.AddHeader("Set-Cookie", $"seans_key={сеанс.код_сеанса.ToString()}");
+                            response.AppendHeader("Set-Cookie", $"user_login={сеанс.пользователь.логин}");
+                            response.AppendHeader("Set-Cookie", $"server_ip={request.Url.ToString().Remove(request.Url.ToString().IndexOf("16017") + 5)}");
+
+                            string логин_из_запроса = Из_строки_по_ключу(RawUrl, "login");
+
+                            Пользователь пользователь = null;
+                            foreach (Пользователь user in список_пользователей)
+                            {
+                                if (user.логин == логин_из_запроса)
+                                {
+                                    пользователь = user;
+                                    break;
+                                }
+                            }
+
+                            if (пользователь == null)
+                            {
+                                Отправка_ответа_на_запрос(response, Переадресация(5, $"Внутренняя ошибка. Пользователь с логином {логин_из_запроса} не найден.",
+                                     request.Url.ToString().Remove(request.Url.ToString().LastIndexOf("/user"))+"/users"), RawUrl);
+                                return;
+                            }
+                            response.AppendHeader("Set-Cookie", $"data={пользователь.логин}; Max-age=5");
+                            Отправка_ответа_на_запрос(response, Загрузка_страницы("Пользователь.html"), RawUrl);
+                            return;
+                        }
+                    case "/change_user":
+                        {
+                            if (!Проверка_логина_и_кода_сеанса_из_куки(request))
+                            {
+                                Отправка_ответа_на_запрос(response, Загрузка_страницы("Авторизация.html"), RawUrl);
+                                return;
+                            }
+
+                            Сеанс сеанс = Сеанс_из_куки(request);
+                            if (сеанс == null) return;
+                            сеанс.время_последнего_запроса = DateTime.Now;
+
+                            response.AddHeader("Set-Cookie", $"seans_key={сеанс.код_сеанса.ToString()}");
+                            response.AppendHeader("Set-Cookie", $"user_login={сеанс.пользователь.логин}");
+                            response.AppendHeader("Set-Cookie", $"server_ip={request.Url.ToString().Remove(request.Url.ToString().IndexOf("16017") + 5)}");
+
+                            string логин_из_запроса = Из_строки_по_ключу(RawUrl, "login");
+
+                            Пользователь пользователь = null;
+                            foreach (Пользователь user in список_пользователей)
+                            {
+                                if (user.логин == логин_из_запроса)
+                                {
+                                    пользователь = user;
+                                    break;
+                                }
+                            }
+
+                            if (пользователь == null)
+                            {
+                                Отправка_ответа_на_запрос(response, Переадресация(5, $"Внутренняя ошибка. Пользователь с логином {логин_из_запроса} не найден.",
+                                     request.Url.ToString().Remove(request.Url.ToString().LastIndexOf("/change_user"))+"/users"), RawUrl);
+                                return;
+                            }
+
+                            пользователь.пароль = Из_строки_по_ключу(RawUrl, "password");
+                            пользователь.класс = Из_строки_по_ключу(RawUrl, "class");
+
+                            Запись_пользователей_на_диск();
+                            Console.WriteLine($"Пользователь {сеанс.пользователь.логин} внес изменения в учетную запись пользователя " + пользователь.логин);
+                            список_событий.Add(new Событие(сеанс.пользователь.логин, $"Пользователь {сеанс.пользователь.логин} внес изменения в учетную запись пользователя " + пользователь.логин, 4));
+                            список_событий.Add(new Событие(пользователь.логин, $"Пользователь {сеанс.пользователь.логин} внес изменения в учетную запись пользователя " + пользователь.логин, 4));
+                            Отправка_ответа_на_запрос(response, Переадресация(5, $"Изменения в учетной записи пользователя с логином {пользователь.логин} сохранены.",
+                                     request.Url.ToString().Remove(request.Url.ToString().LastIndexOf("/change_user")) + "/users"), RawUrl);
+                            return;
+                        }
+                    case "/del_user":
+                        {
+                            if (!Проверка_логина_и_кода_сеанса_из_куки(request))
+                            {
+                                Отправка_ответа_на_запрос(response, Загрузка_страницы("Авторизация.html"), RawUrl);
+                                return;
+                            }
+
+                            Сеанс сеанс = Сеанс_из_куки(request);
+                            if (сеанс == null) return;
+                            сеанс.время_последнего_запроса = DateTime.Now;
+
+                            response.AddHeader("Set-Cookie", $"seans_key={сеанс.код_сеанса.ToString()}");
+                            response.AppendHeader("Set-Cookie", $"user_login={сеанс.пользователь.логин}");
+                            response.AppendHeader("Set-Cookie", $"server_ip={request.Url.ToString().Remove(request.Url.ToString().IndexOf("16017") + 5)}");
+
+                            string логин_из_запроса = Из_строки_по_ключу(RawUrl, "login");
+
+                            Пользователь пользователь = null;
+                            foreach (Пользователь user in список_пользователей)
+                            {
+                                if (user.логин == логин_из_запроса)
+                                {
+                                    пользователь = user;
+                                    break;
+                                }
+                            }
+
+                            if (пользователь == null)
+                            {
+                                Отправка_ответа_на_запрос(response, Переадресация(5, $"Пользователь не удален! Пользователь с логином {логин_из_запроса} не найден.",
+                                       request.Url.ToString().Remove(request.Url.ToString().LastIndexOf("/del_user?")) + "/users"), RawUrl);
+                                return;
+                            }
+
+                            список_пользователей.Remove(пользователь);
+
+                            Запись_пользователей_на_диск();
+
+                            Console.WriteLine($"Пользователь {сеанс.пользователь.логин} удалил учетную запись пользователя с логином " + пользователь.логин);
+                            список_событий.Add(new Событие(сеанс.пользователь.логин, $"Пользователь {сеанс.пользователь.логин} удалил учетную запись пользователя с логином " + пользователь.логин, 4));
+
+                            Отправка_ответа_на_запрос(response, Переадресация(5, $"Пользователь с логином {логин_из_запроса} был удален.",
+                                      request.Url.ToString().Remove(request.Url.ToString().LastIndexOf("/del_user?")) + "/users"), RawUrl);
+                            return;
+                        }
+                    case "/new_user":
+                        {
+                            if (!Проверка_логина_и_кода_сеанса_из_куки(request))
+                            {
+                                Отправка_ответа_на_запрос(response, Загрузка_страницы("Авторизация.html"), RawUrl);
+                                return;
+                            }
+
+                            Сеанс сеанс = Сеанс_из_куки(request);
+                            if (сеанс == null) return;
+                            сеанс.время_последнего_запроса = DateTime.Now;
+
+                            response.AddHeader("Set-Cookie", $"seans_key={сеанс.код_сеанса.ToString()}");
+                            response.AppendHeader("Set-Cookie", $"user_login={сеанс.пользователь.логин}");
+                            response.AppendHeader("Set-Cookie", $"server_ip={request.Url.ToString().Remove(request.Url.ToString().IndexOf("16017") + 5)}");
+
+                            Отправка_ответа_на_запрос(response, Загрузка_страницы("Новый_пользователь.html"), RawUrl);
+                            return;
+                        }
+                    case "/add_user":
+                        {
+                            if (!Проверка_логина_и_кода_сеанса_из_куки(request))
+                            {
+                                Отправка_ответа_на_запрос(response, Загрузка_страницы("Авторизация.html"), RawUrl);
+                                return;
+                            }
+
+                            Сеанс сеанс = Сеанс_из_куки(request);
+                            if (сеанс == null) return;
+                            сеанс.время_последнего_запроса = DateTime.Now;
+
+                            response.AddHeader("Set-Cookie", $"seans_key={сеанс.код_сеанса.ToString()}");
+                            response.AppendHeader("Set-Cookie", $"user_login={сеанс.пользователь.логин}");
+                            response.AppendHeader("Set-Cookie", $"server_ip={request.Url.ToString().Remove(request.Url.ToString().IndexOf("16017") + 5)}");
+
+                            string логин_из_запроса = Из_строки_по_ключу(RawUrl, "login");
+                            foreach (Пользователь user in список_пользователей)
+                            {
+                                if (user.логин == логин_из_запроса)
+                                {
+                                    Отправка_ответа_на_запрос(response, Переадресация(5, $"Новый пользователь не создан! Пользователь с логином {логин_из_запроса} уже существует.",
+                                        request.Url.ToString().Remove(request.Url.ToString().LastIndexOf("/add_user?")) + "/new_user"), RawUrl);
+                                    return;
+                                }
+                            }
+
+                            Пользователь пользователь = new Пользователь();
+                            пользователь.логин = логин_из_запроса;
+                            пользователь.пароль = Из_строки_по_ключу(RawUrl, "password");
+                            пользователь.класс = Из_строки_по_ключу(RawUrl, "class");
+
+                            список_пользователей.Add(пользователь);
+
+                            string адрес_переадресации = Выбор_адреса_в_зависимости_от_класса_пользователя(сеанс.пользователь);
+
+                            Отправка_ответа_на_запрос(response, Переадресация(5, "Новый пользователь с логином "+пользователь.логин + " создан.", 
+                                request.Url.ToString().Remove(request.Url.ToString().LastIndexOf("/add_user?")) + "/users"), RawUrl);
+
+                            Запись_пользователей_на_диск();
+
+                            Console.WriteLine($"Пользователь {сеанс.пользователь.логин} создал нового пользователя с логином " + пользователь.логин);
+                            список_событий.Add(new Событие(сеанс.пользователь.логин, $"Пользователь {сеанс.пользователь.логин} создал нового пользователя с логином " + пользователь.логин, 4));
+                            список_событий.Add(new Событие(пользователь.логин, $"Пользователь {сеанс.пользователь.логин} создал нового пользователя с логином " + пользователь.логин, 4));
+                            return;
+                        }
+                    case "/scripts":
+                        {
+                            if (!Проверка_логина_и_кода_сеанса_из_куки(request))
+                            {
+                                Отправка_ответа_на_запрос(response, Загрузка_страницы("Авторизация.html"), RawUrl);
+                                return;
+                            }
+
+                            Сеанс сеанс = Сеанс_из_куки(request);
+                            if (сеанс == null) return;
+                            сеанс.время_последнего_запроса = DateTime.Now;
+
+                            response.AddHeader("Set-Cookie", $"seans_key={сеанс.код_сеанса.ToString()}");
+                            response.AppendHeader("Set-Cookie", $"user_login={сеанс.пользователь.логин}");
+                            response.AppendHeader("Set-Cookie", $"server_ip={request.Url.ToString().Remove(request.Url.ToString().IndexOf("16017") + 5)}");
+
+                            Отправка_ответа_на_запрос(response, Загрузка_страницы("Скрипты.html"), RawUrl);
+                            return;
+                        }
+                    case "/get_scripts_datas":
+                        {
+                            if (!Проверка_логина_и_кода_сеанса_из_куки(request)) return;
+
+                            Сеанс сеанс = Сеанс_из_куки(request);
+                            if (сеанс == null) return;
+                            сеанс.время_последнего_запроса = DateTime.Now;
+                            string имя_скрипта_из_запроса = Из_строки_по_ключу(RawUrl, "name");
+
+                            List<Скрипт> данные = new List<Скрипт>();
+
+                            if (имя_скрипта_из_запроса == "")
+                            {
+                                данные = список_скриптов;
+                            }
+                            else
+                            {
+                                Скрипт скрипт = null;
+                                foreach (Скрипт scr in список_скриптов)
+                                {
+                                    if (scr.имя == имя_скрипта_из_запроса)
+                                    {
+                                        скрипт = scr;
+                                        break;
+                                    }
+                                }
+                                if (скрипт != null)
+                                {
+                                    данные.Add(скрипт);
+                                }
+                            }
+
+                            JsonSerializerSettings serializerSettings = new JsonSerializerSettings
+                            {
+                                Formatting = Newtonsoft.Json.Formatting.Indented,
+                                DateFormatString = "dd.MM.yyyy HH:mm:ss"
+                            };
+                            string data = JsonConvert.SerializeObject(данные, serializerSettings);
+                            Отправка_ответа_на_запрос(response, data, RawUrl);
+                            return;
+                        }
+                    case "/script":
+                        {
+                            if (!Проверка_логина_и_кода_сеанса_из_куки(request))
+                            {
+                                Отправка_ответа_на_запрос(response, Загрузка_страницы("Авторизация.html"), RawUrl);
+                                return;
+                            }
+
+                            Сеанс сеанс = Сеанс_из_куки(request);
+                            if (сеанс == null) return;
+                            сеанс.время_последнего_запроса = DateTime.Now;
+
+                            response.AddHeader("Set-Cookie", $"seans_key={сеанс.код_сеанса.ToString()}");
+                            response.AppendHeader("Set-Cookie", $"user_login={сеанс.пользователь.логин}");
+                            response.AppendHeader("Set-Cookie", $"server_ip={request.Url.ToString().Remove(request.Url.ToString().IndexOf("16017") + 5)}");
+
+                            string имя_скрипта_из_запроса = Из_строки_по_ключу(RawUrl, "name");
+
+                            Скрипт скрипт = null;
+                            foreach (Скрипт scr in список_скриптов)
+                            {
+                                if (scr.имя==имя_скрипта_из_запроса)
+                                {
+                                    скрипт=scr;
+                                    break;
+                                }
+                            }
+
+                            if (скрипт == null)
+                            {
+                                Отправка_ответа_на_запрос(response, Переадресация(5, $"Внутренняя ошибка. Скрипт с именем {имя_скрипта_из_запроса} не найден.",
+                                     request.Url.ToString().Remove(request.Url.ToString().LastIndexOf("/script")) + "/scripts"), RawUrl);
+                                return;
+                            }
+                            response.AppendHeader("Set-Cookie", $"data={список_скриптов.LastIndexOf(скрипт)}; Max-age=5");
+                            Отправка_ответа_на_запрос(response, Загрузка_страницы("Скрипт.html"), RawUrl);
+                            return;
+                        }
+                    case "/get_script_name_from_number":
+                        {
+                            if (!Проверка_логина_и_кода_сеанса_из_куки(request)) return;
+
+                            Сеанс сеанс = Сеанс_из_куки(request);
+                            if (сеанс == null) return;
+                            сеанс.время_последнего_запроса = DateTime.Now;
+                            string номер_скрипта_из_запроса = Из_строки_по_ключу(RawUrl, "number");
+                            
+                            int temp;
+                            int номер_скрипта = int.TryParse(номер_скрипта_из_запроса, out temp) ? int.Parse(номер_скрипта_из_запроса) : -1;
+                            
+                            if (номер_скрипта != -1 && номер_скрипта < список_скриптов.Count)
+                            {
+                                Отправка_ответа_на_запрос(response, список_скриптов[номер_скрипта].имя, RawUrl);
+                                return;
+                            }
+                            else
+                            {
+                                Отправка_ответа_на_запрос(response, "", RawUrl);
+                                return;
+                            }
+                        }
+                    case "/get_script_code_from_number":
+                        {
+                            if (!Проверка_логина_и_кода_сеанса_из_куки(request)) return;
+
+                            Сеанс сеанс = Сеанс_из_куки(request);
+                            if (сеанс == null) return;
+                            сеанс.время_последнего_запроса = DateTime.Now;
+                            string номер_скрипта_из_запроса = Из_строки_по_ключу(RawUrl, "number");
+
+                            int temp;
+                            int номер_скрипта = int.TryParse(номер_скрипта_из_запроса, out temp) ? int.Parse(номер_скрипта_из_запроса) : -1;
+
+                            if (номер_скрипта != -1 && номер_скрипта < список_скриптов.Count)
+                            {
+                                Отправка_ответа_на_запрос(response, список_скриптов[номер_скрипта].код, RawUrl);
+                                return;
+                            }
+                            else
+                            {
+                                Отправка_ответа_на_запрос(response, "", RawUrl);
+                                return;
+                            }
+                        }
+                    case "/change_script":
+                        {
+                            if (!Проверка_логина_и_кода_сеанса_из_куки(request))
+                            {
+                                Отправка_ответа_на_запрос(response, Загрузка_страницы("Авторизация.html"), RawUrl);
+                                return;
+                            }
+
+                            Сеанс сеанс = Сеанс_из_куки(request);
+                            if (сеанс == null) return;
+                            сеанс.время_последнего_запроса = DateTime.Now;
+
+                            response.AddHeader("Set-Cookie", $"seans_key={сеанс.код_сеанса.ToString()}");
+                            response.AppendHeader("Set-Cookie", $"user_login={сеанс.пользователь.логин}");
+                            response.AppendHeader("Set-Cookie", $"server_ip={request.Url.ToString().Remove(request.Url.ToString().IndexOf("16017") + 5)}");
+
+                            string имя_скрипта_из_запроса = Из_строки_по_ключу(RawUrl, "name");
+
+                            Скрипт скрипт = null;
+                            foreach (Скрипт scr in список_скриптов)
+                            {
+                                if (scr.имя == имя_скрипта_из_запроса)
+                                {
+                                    скрипт = scr;
+                                    break;
+                                }
+                            }
+
+                            if (скрипт == null)
+                            {
+                                Отправка_ответа_на_запрос(response, Переадресация(5, $"Внутренняя ошибка. Скрипт с именем {имя_скрипта_из_запроса} не найден.",
+                                    request.Url.ToString().Remove(request.Url.ToString().LastIndexOf("/change_device?")) +
+                                    Выбор_адреса_в_зависимости_от_класса_пользователя(сеанс.пользователь)), RawUrl);
+                                return;
+                            }
+
+                            скрипт.код=Из_строки_по_ключу(RawUrl,"code");
+
+                            Отправка_ответа_на_запрос(response, Переадресация(5, "Изменения сохранены", "/scripts"), RawUrl);
+
+                            Запись_скриптов_на_диск();
+
+                            Console.WriteLine($"Пользователь {сеанс.пользователь.логин} внес изменения в скрипт с серийным именем " + скрипт.имя);
+                            список_событий.Add(new Событие(сеанс.пользователь.логин, $"Пользователь {сеанс.пользователь.логин} внес изменения в скрипт с серийным именем " + скрипт.имя, 5));
+                            return;
+                        }
+                    case "/new_script":
+                        {
+                            if (!Проверка_логина_и_кода_сеанса_из_куки(request))
+                            {
+                                Отправка_ответа_на_запрос(response, Загрузка_страницы("Авторизация.html"), RawUrl);
+                                return;
+                            }
+
+                            Сеанс сеанс = Сеанс_из_куки(request);
+                            if (сеанс == null) return;
+                            сеанс.время_последнего_запроса = DateTime.Now;
+
+                            response.AddHeader("Set-Cookie", $"seans_key={сеанс.код_сеанса.ToString()}");
+                            response.AppendHeader("Set-Cookie", $"user_login={сеанс.пользователь.логин}");
+                            response.AppendHeader("Set-Cookie", $"server_ip={request.Url.ToString().Remove(request.Url.ToString().IndexOf("16017") + 5)}");
+
+                            Отправка_ответа_на_запрос(response, Загрузка_страницы("Новый_скрипт.html"), RawUrl);
+                            return;
+                        }
+                    case "/add_script":
+                        {
+                            if (!Проверка_логина_и_кода_сеанса_из_куки(request))
+                            {
+                                Отправка_ответа_на_запрос(response, Загрузка_страницы("Авторизация.html"), RawUrl);
+                                return;
+                            }
+
+                            Сеанс сеанс = Сеанс_из_куки(request);
+                            if (сеанс == null) return;
+                            сеанс.время_последнего_запроса = DateTime.Now;
+
+                            response.AddHeader("Set-Cookie", $"seans_key={сеанс.код_сеанса.ToString()}");
+                            response.AppendHeader("Set-Cookie", $"user_login={сеанс.пользователь.логин}");
+                            response.AppendHeader("Set-Cookie", $"server_ip={request.Url.ToString().Remove(request.Url.ToString().IndexOf("16017") + 5)}");
+
+                            string имя_скрипта_из_запроса = Из_строки_по_ключу(RawUrl, "name");
+                            foreach (Скрипт scr in список_скриптов)
+                            {
+                                if (scr.имя == имя_скрипта_из_запроса)
+                                {
+                                    Отправка_ответа_на_запрос(response, Переадресация(5, $"Новый скрипт не создан! Скрипт с именем {имя_скрипта_из_запроса} уже существует.","/new_script"), RawUrl);
+                                    return;
+                                }
+                            }
+
+                            Скрипт скрипт = new Скрипт();
+                            скрипт.имя = имя_скрипта_из_запроса;
+                            скрипт.код = Из_строки_по_ключу(RawUrl, "code");
+
+                            список_скриптов.Add(скрипт);
+
+                            string адрес_переадресации = Выбор_адреса_в_зависимости_от_класса_пользователя(сеанс.пользователь);
+
+                            Отправка_ответа_на_запрос(response, Переадресация(5, "Новый скрипт с именем " + скрипт.имя + " создан.", "/scripts"), RawUrl);
+
+                            Запись_скриптов_на_диск();
+
+                            Console.WriteLine($"Пользователь {сеанс.пользователь.логин} создал новый скрипт с именем " + скрипт.имя+".");
+                            список_событий.Add(new Событие(сеанс.пользователь.логин, $"Пользователь {сеанс.пользователь.логин} создал новый скрипт с именем " + скрипт.имя + ".", 5));
+                            return;
+                        }
+                    case "/del_script":
+                        {
+                            if (!Проверка_логина_и_кода_сеанса_из_куки(request))
+                            {
+                                Отправка_ответа_на_запрос(response, Загрузка_страницы("Авторизация.html"), RawUrl);
+                                return;
+                            }
+
+                            Сеанс сеанс = Сеанс_из_куки(request);
+                            if (сеанс == null) return;
+                            сеанс.время_последнего_запроса = DateTime.Now;
+
+                            response.AddHeader("Set-Cookie", $"seans_key={сеанс.код_сеанса.ToString()}");
+                            response.AppendHeader("Set-Cookie", $"user_login={сеанс.пользователь.логин}");
+                            response.AppendHeader("Set-Cookie", $"server_ip={request.Url.ToString().Remove(request.Url.ToString().IndexOf("16017") + 5)}");
+
+                            string имя_скрипта_из_запроса = Из_строки_по_ключу(RawUrl, "name");
+
+                            Скрипт скрипт = null;
+                            foreach (Скрипт scr in список_скриптов)
+                            {
+                                if (scr.имя == имя_скрипта_из_запроса)
+                                {
+                                    скрипт = scr;
+                                    break;
+                                }
+                            }
+
+                            if (скрипт == null)
+                            {
+                                Отправка_ответа_на_запрос(response, Переадресация(5, $"Скрипт не удален! Скрипт с именем {имя_скрипта_из_запроса} не найден.","/scripts"), RawUrl);
+                                return;
+                            }
+
+                            список_скриптов.Remove(скрипт);
+
+                            Запись_скриптов_на_диск();
+
+                            Console.WriteLine($"Пользователь {сеанс.пользователь.логин} удалил скрипт с именем " + скрипт.имя);
+                            список_событий.Add(new Событие(сеанс.пользователь.логин, $"Пользователь {сеанс.пользователь.логин} удалил скрипт с именем " + скрипт.имя, 5));
+
+                            Отправка_ответа_на_запрос(response, Переадресация(5, $"Скрипт с именем {имя_скрипта_из_запроса} был удален.","/scripts"), RawUrl);
+                            return;
                         }
                     case "/test":
                         {
@@ -1236,6 +2124,40 @@ namespace СерврерУстройств
                             return;
                         }
                 }
+            }
+
+            static string Переадресация(int секунд, string сообщение, string Url)
+            {
+                XDocument xDoc = new XDocument();
+                XElement html = new XElement("html");
+                XElement head = new XElement("head",
+                                new XElement("meta", new XAttribute("charset", "utf-8")),
+                                new XElement("meta", new XAttribute("http-equiv", "refresh"),
+                                    new XAttribute("content", $"{секунд};URL={Url}")),
+                                new XElement("style",
+                                    new XAttribute("type","text/css"),
+                                    "\r\n.inner {\r\n" +
+                                    "\tmargin: auto;\r\n" +
+                                    "\tpadding:20px;\r\n" +
+                                    "\tbackground-color: #cfc;" +
+                                    "\tborder-radius: 20px;\r\n" +
+                                    "\tbox-shadow: 0 0 10px rgba(0, 0, 0, 0.5);\r\n" +
+                                    "\ttext-shadow: 0 1px 1px white;" +
+                                    "\ttext-align: center;" +
+                                    "\r\n}"));
+                html.Add(head);
+                if (сообщение != null)
+                {
+                    XElement body = new XElement("body",
+                        new XElement("div",
+                            new XAttribute("class","inner"),
+                            new XAttribute("id","inner"),
+                            new XElement("big",
+                                new XElement("big", сообщение))));
+                    html.Add(body);
+                }
+                xDoc.Add(html);
+                return "<!DOCTYPE HTML>\r\n" + xDoc;
             }
 
             static void Отправка_ответа_на_запрос(HttpListenerResponse response, string responseString,string RawUrl)
@@ -1260,6 +2182,25 @@ namespace СерврерУстройств
                 }
                 response.Close();
                 return;
+            }
+
+            static string Выбор_адреса_в_зависимости_от_класса_пользователя(Пользователь пользователь)
+            {
+                string адрес_переадресации = "";
+
+                switch (пользователь.класс)
+                {
+                    case "Admin":
+                        адрес_переадресации = "/main_devices_admin";
+                        break;
+                    case "COD":
+                        адрес_переадресации = "/main_devices_cod";
+                        break;
+                    case "EDDS":
+                        адрес_переадресации = "/main_devices_edds";
+                        break;
+                }
+                return адрес_переадресации;
             }
 
             static string Загрузка_страницы(string name)
@@ -1308,18 +2249,6 @@ namespace СерврерУстройств
                     return строка;
                 строка = строка.Remove(строка.IndexOf("&"));
                 return строка;
-            }
-
-            static string Набор_куки(List<string[]> лист)
-            {
-                string data = "";
-                foreach (string[] строки in лист)
-                {
-                    data += строки[0] + "+=+" + строки[1] + "+||+"; 
-                }
-                if (data.IndexOf("+||+") != -1)
-                    data = data.Remove(data.LastIndexOf("+||+"));
-                return data;
             }
 
             static bool Проверка_логина_и_кода_сеанса_из_URL(string RawUrl)
@@ -1428,16 +2357,28 @@ namespace СерврерУстройств
             public string логин { get; set; }
             public string пароль { get; set; }
             public string класс { get; set; }
+            public bool онлайн { get; set; }
 
             public Пользователь()
             {
                 логин = "";
                 пароль = "";
                 класс = "";
+                онлайн = false;
             }
 
             public string ToJSON()
             {
+                онлайн = false;
+                foreach (Сеанс сеанс in список_сеансов)
+                {
+                    if (сеанс.пользователь.логин == логин)
+                    {
+                        онлайн = true;
+                        break;
+                    }
+                }
+
                 JsonSerializerSettings serializerSettings = new JsonSerializerSettings
                 {
                     Formatting = Newtonsoft.Json.Formatting.Indented,
@@ -1477,6 +2418,7 @@ namespace СерврерУстройств
             //1-пользователь вошел
             //2-пользователь вышел
             //3-пользователь внес изменения в устройства
+            //4-пользователь внес изменения в пользователя
             //10-ошибка записи файла
             //11-запись файла
             //12-ошибка чтения файла
@@ -1523,6 +2465,7 @@ namespace СерврерУстройств
             public string тип_сообщения { get; set; }
             public string сообщение_по_умолчанию { get; set; }
             public string сообщение_индивидуальное { get; set; }
+            public string комментарий { get; set; }
             public DateTime время_показа_индивидуального_сообщения { get; set; }
             public TimeSpan время_показа { get;set; }
             public List<DateTime> список_времени_выхода_на_связь { get; set; }
@@ -1542,6 +2485,7 @@ namespace СерврерУстройств
                 тип_сообщения = "Не выводится";
                 сообщение_по_умолчанию = "";
                 сообщение_индивидуальное = "";
+                комментарий = "";
                 время_показа = new TimeSpan(0, 30, 0);
                 время_показа_индивидуального_сообщения = DateTime.Now;
                 список_времени_выхода_на_связь = new List<DateTime>();
@@ -1555,20 +2499,32 @@ namespace СерврерУстройств
         {
             public string serial_number { set; get; }
             public string login { get; set; }
+            public string password { get; set; }
             public string name { set; get; }
+            public string phone { set; get; }
             public string address { set; get; }
             public string type { set; get; }
             public string status { set; get; }
             public double latit { get; set; }
             public double longit { get; set; }
+            public string default_message { get; set; }
+            public string individual_message { set; get; }
+            public string individual_message_time { set; get; }
+            public string comment { get; set; }
             public List<DateTime> times { get; set; }
             public List<string> scripts { get; set; }
+            public int visible_time { get; set; }
+            public int update_code { get; set; }
+            public List<string> list_scripts_names { get; set; }
+            public string script_name { get; set; }
 
             public ДанныеУстройстваДляВеб(Устройство устройство)
             {
                 this.serial_number = устройство.серийный_номер;
                 this.login = устройство.логин;
+                password = устройство.пароль;
                 this.name = устройство.имя;
+                phone = устройство.телефон;
                 this.address = устройство.адрес;
                 this.type = устройство.тип_сообщения;
                 this.status = устройство.статус;
@@ -1576,6 +2532,22 @@ namespace СерврерУстройств
                 this.longit = устройство.долгота;
                 times = устройство.список_времени_выхода_на_связь;
                 scripts = устройство.список_отображения_отправленных_скриптов;
+                default_message = устройство.сообщение_по_умолчанию;
+                individual_message = устройство.сообщение_индивидуальное;
+                individual_message_time = устройство.время_показа_индивидуального_сообщения.Year+"-"+ 
+                    (устройство.время_показа_индивидуального_сообщения.Month.ToString().Length==2? устройство.время_показа_индивидуального_сообщения.Month.ToString():"0"+ устройство.время_показа_индивидуального_сообщения.Month) +"-"+ 
+                    (устройство.время_показа_индивидуального_сообщения.Day.ToString().Length == 2 ? устройство.время_показа_индивидуального_сообщения.Day.ToString() : "0" + устройство.время_показа_индивидуального_сообщения.Day) +"T"+
+                    (устройство.время_показа_индивидуального_сообщения.Hour.ToString().Length == 2 ? устройство.время_показа_индивидуального_сообщения.Hour.ToString() : "0" + устройство.время_показа_индивидуального_сообщения.Hour) + ":"+
+                    (устройство.время_показа_индивидуального_сообщения.Minute.ToString().Length == 2 ? устройство.время_показа_индивидуального_сообщения.Minute.ToString() : "0" + устройство.время_показа_индивидуального_сообщения.Minute);
+                comment = устройство.комментарий;
+                visible_time = устройство.время_показа.Minutes;
+                update_code = устройство.код_обновления_скрипта;
+                script_name = устройство.имя_скрипта;
+                list_scripts_names = new List<string>();
+                foreach (Скрипт скрипт in список_скриптов)
+                {
+                    list_scripts_names.Add(скрипт.имя);
+                }
             }
         }
 
