@@ -2117,6 +2117,47 @@ namespace СерврерУстройств
                             Отправка_ответа_на_запрос(response, Переадресация(5, $"Скрипт с именем {имя_скрипта_из_запроса} был удален.","/scripts"), RawUrl);
                             return;
                         }
+                    case "/messages_edds":
+                        {
+                            if (!Проверка_логина_и_кода_сеанса_из_куки(request))
+                            {
+                                Отправка_ответа_на_запрос(response, Загрузка_страницы("Авторизация.html"), RawUrl);
+                                return;
+                            }
+
+                            Сеанс сеанс = Сеанс_из_куки(request);
+                            сеанс.время_последнего_запроса = DateTime.Now;
+                            Пользователь пользователь = сеанс.пользователь;
+
+                            response.AddHeader("Set-Cookie", $"seans_key={сеанс.код_сеанса.ToString()}");
+                            response.AppendHeader("Set-Cookie", $"user_login={пользователь.логин}");
+                            response.AppendHeader("Set-Cookie", $"server_ip={request.Url.ToString().Remove(request.Url.ToString().IndexOf("16017") + 5)}");
+
+                            Отправка_ответа_на_запрос(response, Загрузка_страницы("Сообщения_ЕДДС.html"), RawUrl);
+                            return;
+                        }
+                    case "/get_messages_data":
+                        {
+                            if (!Проверка_логина_и_кода_сеанса_из_куки(request)) return;
+
+                            JsonSerializerSettings serializerSettings = new JsonSerializerSettings
+                            {
+                                Formatting = Newtonsoft.Json.Formatting.Indented,
+                                DateFormatString = "dd.MM.yyyy HH:mm:ss"
+                            };
+                            List<СообщениеЕДДС> список = new List<СообщениеЕДДС>();
+                            foreach (СообщениеЕДДС сообщение in список_сообщенийЕДДС)
+                            {
+                                if (сообщение.время_начала < DateTime.Now && сообщение.время_конца > DateTime.Now)
+                                {
+                                    список.Add(сообщение);
+                                }
+                            }
+                            string data = JsonConvert.SerializeObject(список, serializerSettings);
+
+                            Отправка_ответа_на_запрос(response, data, RawUrl);
+                            return;
+                        }
                     case "/test":
                         {
                             Console.WriteLine("123");
@@ -2197,7 +2238,7 @@ namespace СерврерУстройств
                         адрес_переадресации = "/main_devices_cod";
                         break;
                     case "EDDS":
-                        адрес_переадресации = "/main_devices_edds";
+                        адрес_переадресации = "/messages_edds";
                         break;
                 }
                 return адрес_переадресации;
@@ -2739,6 +2780,7 @@ namespace СерврерУстройств
                                     {
                                         if (имя == устройство.имя)
                                         {
+                                            сообщение.количество_показов++;
                                             if (сообщение.тип == "Экстренное")
                                                 сообщение_экстренное = сообщение;
                                             if (сообщение.тип == "Информирование")
@@ -3341,6 +3383,7 @@ namespace СерврерУстройств
             public string цвет { get; set; }
             public int период { get; set; }
             public List<string> табло { get; set; }
+            public int количество_показов { get; set; }
 
             public СообщениеЕДДС(int id, DateTime начало, DateTime конец, string тип_сообщения)
             {
@@ -3352,6 +3395,7 @@ namespace СерврерУстройств
                 цвет = "#ff0000";
                 период = 1;
                 табло = new List<string>();
+                количество_показов = 0;
             }
         }
 
